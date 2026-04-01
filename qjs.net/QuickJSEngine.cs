@@ -281,6 +281,23 @@ public sealed class QuickJSEngine : IDisposable
         }, argCount);
     }
 
+    /// <summary>
+    /// Register a delegate (Func or Action) as a global JavaScript function.
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="del"></param>
+    public void RegisterFunction(string name, Delegate del)
+    {
+        ThrowIfDisposed();
+        _runtime.RegisterGlobalFunction(name, jsArgs =>
+        {
+            var managedArgs = new object?[jsArgs.Length];
+            for (int i = 0; i < jsArgs.Length; i++)
+                managedArgs[i] = _runtime.JSValueToManaged(jsArgs[i]);
+            return del.DynamicInvoke(managedArgs);
+        }, del.Method.GetParameters().Length);
+    }
+
     // ──────────────────── Utilities ────────────────────
 
     /// <summary>

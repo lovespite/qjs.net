@@ -444,6 +444,15 @@ public class QuickJSEngineTests : IDisposable
         Assert.Equal(42, result);
     }
 
+    [Fact]
+    public void RegisterFunction_WithDelegate()
+    {
+        static int Calc(int a, int b) => a + b;
+        _engine.RegisterFunction("calc", Calc);
+        var result = _engine.Eval("calc(10, 15)");
+        Assert.Equal(25, result);
+    }
+
     // ════════════════════ HasFunction / Invoke ════════════════════
 
     [Fact]
