@@ -1,3 +1,5 @@
 <Solution>
+  <Folder Name="/qjs.net/" />
   <Project Path="qjs.net/QuickJsNet.csproj" />
+  <Project Path="QuickJsNet.Tests/QuickJsNet.Tests.csproj" />
 </Solution>

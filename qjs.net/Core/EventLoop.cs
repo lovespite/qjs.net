@@ -193,16 +193,26 @@ if (typeof globalThis.queueMicrotask === 'undefined') {
             var entry = _timers[id];
             if (entry.Cancelled) continue;
 
-            var undef = QuickJSNative.QJS_NewUndefined();
-            var result = _engine.Call(entry.Callback, undef);
-            _engine.FreeValue(result);
+            // Hold an extra reference so that clearInterval/clearTimeout
+            // called from inside the callback cannot free the function
+            // while QJS_Call is still on the stack.
+            var cb = _engine.DupValue(entry.Callback);
 
-            if (entry.IntervalMs > 0)
+            var undef = QuickJSNative.QJS_NewUndefined();
+            var result = _engine.Call(cb, undef);
+            _engine.FreeValue(result);
+            _engine.FreeValue(cb);
+
+            // The callback may have cancelled this timer via clearInterval,
+            // so re-check before rescheduling or cleaning up.
+            if (!_timers.ContainsKey(id)) continue;
+
+            if (entry.IntervalMs > 0 && !entry.Cancelled)
             {
                 // Reschedule for next interval
                 entry.FireAtTicks = DateTime.UtcNow.AddMilliseconds(entry.IntervalMs).Ticks;
             }
-            else
+            else if (!entry.Cancelled)
             {
                 // One-shot: free callback and remove
                 _engine.FreeValue(entry.Callback);
