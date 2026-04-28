@@ -320,6 +320,18 @@ public sealed class QuickJSEngine : IDisposable
         _runtime.RunGC();
     }
 
+    /// <summary>
+    /// Drain pending timers, queued callbacks and microtasks once.
+    /// Non-blocking; intended to be called from a host's per-frame tick so that
+    /// <c>setTimeout</c> / <c>setInterval</c> callbacks fire while the engine is otherwise idle.
+    /// Must be invoked on the JS thread.
+    /// </summary>
+    public void PumpEventLoop()
+    {
+        ThrowIfDisposed();
+        _runtime.PumpEventLoop();
+    }
+
     // ──────────────────── Dispose ────────────────────
 
     /// <inheritdoc />

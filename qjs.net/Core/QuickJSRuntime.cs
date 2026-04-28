@@ -49,6 +49,14 @@ public partial class QuickJSRuntime
     /// <summary>Track an async op via the event loop. Used by interop bridges in this assembly.</summary>
     internal void TrackAsyncOpForBridge() => _eventLoop.TrackAsyncOp();
 
+    /// <summary>
+    /// Process all currently pending timers, queued callbacks and microtasks in a single pass.
+    /// Must be called on the JS thread. Non-blocking; returns immediately when the queue is drained.
+    /// Intended for host integrations that drive their own message loop (e.g. UI frame ticks)
+    /// and need <c>setTimeout</c> / <c>setInterval</c> callbacks to fire while the host is idle.
+    /// </summary>
+    public void PumpEventLoop() => _eventLoop.DrainQueue();
+
     public event Action<int, string>? OnLog;
 
     public QuickJSRuntime(ulong memoryLimit = 0, ulong stackSize = 0)
