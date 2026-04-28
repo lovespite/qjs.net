@@ -209,8 +209,20 @@ if (typeof globalThis.queueMicrotask === 'undefined') {
 
             if (entry.IntervalMs > 0 && !entry.Cancelled)
             {
-                // Reschedule for next interval
-                entry.FireAtTicks = DateTime.UtcNow.AddMilliseconds(entry.IntervalMs).Ticks;
+                // Reschedule cumulatively (drift-free): next deadline = previous deadline + interval,
+                // not now + interval — otherwise pump latency at each fire accumulates and the
+                // timer drifts slower than wall-clock (e.g. 100ms interval pumped on a 16ms grain
+                // ends up ~108ms per cycle = 8% slow). Cumulative scheduling matches browser /
+                // Node.js behaviour and stays in phase with wall time.
+                long intervalTicks = entry.IntervalMs * TimeSpan.TicksPerMillisecond;
+                long next = entry.FireAtTicks + intervalTicks;
+                long now2 = DateTime.UtcNow.Ticks;
+                // If we're more than one full interval behind (e.g. tab was suspended / window
+                // dragged / GC pause), skip missed fires instead of bursting — the spec allows
+                // implementations to coalesce. Snap forward to (now + interval).
+                if (next < now2 - intervalTicks)
+                    next = now2 + intervalTicks;
+                entry.FireAtTicks = next;
             }
             else if (!entry.Cancelled)
             {
