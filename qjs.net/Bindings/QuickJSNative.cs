@@ -40,7 +40,7 @@ public struct JSValue
 /// <summary>
 /// P/Invoke declarations for quickjs.dll
 /// </summary>
-internal static partial class QuickJSNative
+public static partial class QuickJSNative
 {
     private const string DLL_NAME = "quickjs";
 

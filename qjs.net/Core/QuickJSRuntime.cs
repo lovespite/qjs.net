@@ -1,5 +1,6 @@
 using QuickJsNet.Utils;
 using QuickJSNet.Bindings;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -9,8 +10,14 @@ namespace QuickJsNet.Core;
 /// High-level QuickJS JavaScript runtime wrapper for .NET.
 /// Manages a JSRuntime and JSContext, and provides methods for evaluation,
 /// value manipulation, and native function registration.
+/// <para>
+/// This type is exposed publicly to allow source-generated
+/// <see cref="QuickJsNet.Interop.IJSBinder"/> implementations to interact with
+/// the engine. Most application code should use the higher-level
+/// <see cref="QuickJSEngine"/> façade instead.
+/// </para>
 /// </summary>
-internal class QuickJSRuntime
+public class QuickJSRuntime
 {
     private static readonly string[] LOG_LEVELS = { "DEBUG", "WARN", "ERROR", "CRITICAL", "FATAL", "UNKNOWN1" };
     private IntPtr _runtime;
@@ -21,8 +28,26 @@ internal class QuickJSRuntime
     private readonly QuickJSNative.LogCallback _logCallbackDelegate;
     private readonly List<GCHandle> _pinnedDelegates = [];
     private readonly EventLoop _eventLoop;
+    private readonly List<long> _wrappedObjectIds = new();
 
-    internal IntPtr Context => _context;
+    // Process-wide map: native context pointer → managed runtime instance.
+    // Allows AOT-safe static [UnmanagedCallersOnly] callbacks to resolve
+    // their owning runtime from the ctx parameter without any reflection or
+    // GCHandle allocation per call.
+    private static readonly ConcurrentDictionary<IntPtr, QuickJSRuntime> _runtimesByContext = new();
+
+    public IntPtr Context => _context;
+
+    /// <summary>
+    /// Resolve a managed <see cref="QuickJSRuntime"/> from a native context
+    /// pointer. Used by source-generated JS callbacks to bridge back into
+    /// managed land. AOT-safe.
+    /// </summary>
+    public static QuickJSRuntime? FromContext(IntPtr ctx)
+        => _runtimesByContext.TryGetValue(ctx, out var rt) ? rt : null;
+
+    /// <summary>Track an async op via the event loop. Used by interop bridges in this assembly.</summary>
+    internal void TrackAsyncOpForBridge() => _eventLoop.TrackAsyncOp();
 
     public event Action<int, string>? OnLog;
 
@@ -49,6 +74,7 @@ internal class QuickJSRuntime
         QuickJSNative.QJS_SetLogCallback(ptr);
 
         _eventLoop = new EventLoop(this);
+        _runtimesByContext[_context] = this;
     }
 
     /// <summary>
@@ -165,6 +191,46 @@ internal class QuickJSRuntime
         var jsVal = ManagedToJSValue(value);
         QuickJSNative.QJS_SetPropertyStr(_context, global, name, jsVal);
         QuickJSNative.QJS_FreeValue(_context, global);
+    }
+
+    /// <summary>
+    /// Register an opaque-id allocated by a generated binder for cleanup at
+    /// runtime disposal.
+    /// </summary>
+    public void TrackWrappedObjectId(long id) => _wrappedObjectIds.Add(id);
+
+    /// <summary>
+    /// Install the static container of a <c>[JSExport]</c>-annotated type as
+    /// a global JS object (mirroring its static properties &amp; methods).
+    /// AOT-safe: the type parameter is concrete; the binder is registered via
+    /// a module initializer.
+    /// </summary>
+    public void SetGlobalStatic<T>(string name) where T : class
+    {
+        var binder = QuickJsNet.Interop.JSBinderRegistry.Get<T>()
+            ?? throw new InvalidOperationException(
+                $"No [JSExport] binder registered for {typeof(T).FullName}. " +
+                "Ensure the type is partial and annotated with [JSExport].");
+        var container = binder.BuildStaticContainer(this);
+        var global = QuickJSNative.QJS_GetGlobalObject(_context);
+        QuickJSNative.QJS_SetPropertyStr(_context, global, name, container);
+        QuickJSNative.QJS_FreeValue(_context, global);
+    }
+
+    /// <summary>
+    /// Wrap a managed instance via its registered <see cref="QuickJsNet.Interop.IJSBinder"/>,
+    /// returning a JS object. Falls back to a plain primitive conversion when
+    /// no binder is registered.
+    /// </summary>
+    internal JSValue WrapManagedObject(object value)
+    {
+        if (value is null) return QuickJSNative.QJS_NewNull();
+        if (QuickJsNet.Interop.JSBinderRegistry.TryGet(value.GetType(), out var binder)
+            && binder is not null)
+        {
+            return binder.Wrap(this, value);
+        }
+        return ManagedToJSValue(value);
     }
 
     /// <summary>
@@ -312,6 +378,10 @@ internal class QuickJSRuntime
             case JSValue jsv:
                 return QuickJSNative.QJS_DupValue(_context, jsv);
             default:
+                // Look up [JSExport]-generated binder if present.
+                if (QuickJsNet.Interop.JSBinderRegistry.TryGet(value.GetType(), out var binder)
+                    && binder is not null)
+                    return binder.Wrap(this, value);
                 return QuickJSNative.QJS_NewString(_context, value.ToString() ?? "");
         }
     }
@@ -613,6 +683,14 @@ internal class QuickJSRuntime
 
         if (_context != IntPtr.Zero)
         {
+            _runtimesByContext.TryRemove(_context, out _);
+
+            // Release any object-table ids we created for [JSExport] wrappers
+            // associated with this runtime.
+            foreach (var id in _wrappedObjectIds)
+                QuickJsNet.Interop.JSObjectTable.Release(id);
+            _wrappedObjectIds.Clear();
+
             QuickJSNative.QJS_FreeContext(_context);
             _context = IntPtr.Zero;
         }

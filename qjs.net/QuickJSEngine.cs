@@ -193,6 +193,17 @@ public sealed class QuickJSEngine : IDisposable
     }
 
     /// <summary>
+    /// Install the static container for a <c>[JSExport]</c>-annotated type as
+    /// a global JS object (its static methods/properties become accessible as
+    /// <c>name.staticMember</c> in JS). AOT-safe.
+    /// </summary>
+    public void SetGlobalStatic<T>(string name) where T : class
+    {
+        ThrowIfDisposed();
+        _runtime.SetGlobalStatic<T>(name);
+    }
+
+    /// <summary>
     /// Read a global variable. Objects and arrays are returned as JSON strings.
     /// </summary>
     public object? GetGlobal(string name)
