@@ -17,7 +17,7 @@ namespace QuickJsNet.Core;
 /// <see cref="QuickJSEngine"/> façade instead.
 /// </para>
 /// </summary>
-public class QuickJSRuntime
+public partial class QuickJSRuntime
 {
     private static readonly string[] LOG_LEVELS = { "DEBUG", "WARN", "ERROR", "CRITICAL", "FATAL", "UNKNOWN1" };
     private IntPtr _runtime;
@@ -144,8 +144,8 @@ public class QuickJSRuntime
             ? QuickJSNative.JS_EVAL_TYPE_MODULE
             : QuickJSNative.JS_EVAL_TYPE_GLOBAL;
 
-        var result = QuickJSNative.QJS_Eval(_context, code, (UIntPtr)Encoding.UTF8.GetByteCount(code),
-            filename, flags);
+        var result = Utf8StringHelper.WithUtf8(code, filename, (cp, cl, fp, _) =>
+            QuickJSNative.QJS_EvalPtr(_context, cp, cl, fp, flags));
 
         // Execute any pending jobs (microtasks)
         ExecutePendingJobs();
@@ -166,8 +166,8 @@ public class QuickJSRuntime
     /// </summary>
     internal JSValue EvalRaw(string code, string filename = "<eval>", int flags = 0)
     {
-        return QuickJSNative.QJS_Eval(_context, code,
-            (UIntPtr)Encoding.UTF8.GetByteCount(code), filename, flags);
+        return Utf8StringHelper.WithUtf8(code, filename, (cp, cl, fp, _) =>
+            QuickJSNative.QJS_EvalPtr(_context, cp, cl, fp, flags));
     }
 
     /// <summary>
@@ -255,17 +255,25 @@ public class QuickJSRuntime
         {
             try
             {
-                var args = new JSValue[argc];
-                for (int i = 0; i < argc; i++)
+                JSValue[] args;
+                if (argc == 0)
                 {
-                    args[i] = Marshal.PtrToStructure<JSValue>(argv + i * Marshal.SizeOf<JSValue>());
+                    args = Array.Empty<JSValue>();
+                }
+                else
+                {
+                    args = new JSValue[argc];
+                    unsafe
+                    {
+                        new ReadOnlySpan<JSValue>((void*)argv, argc).CopyTo(args);
+                    }
                 }
                 var result = handler(args);
                 return ManagedToJSValue(result);
             }
             catch (Exception ex)
             {
-                return QuickJSNative.QJS_ThrowInternalError(ctx, ex.Message);
+                return ThrowInternalError(ctx, ex.Message);
             }
         };
 
@@ -274,7 +282,11 @@ public class QuickJSRuntime
         var funcPtr = Marshal.GetFunctionPointerForDelegate(nativeFunc);
 
         var global = QuickJSNative.QJS_GetGlobalObject(_context);
-        QuickJSNative.QJS_SetPropertyFunctionStr(_context, global, name, funcPtr, argCount);
+        Utf8StringHelper.WithUtf8(name, (pName, _) =>
+        {
+            QuickJSNative.QJS_SetPropertyFunctionStrPtr(_context, global, pName, funcPtr, argCount);
+            return 0;
+        });
         QuickJSNative.QJS_FreeValue(_context, global);
     }
 
@@ -287,17 +299,25 @@ public class QuickJSRuntime
         {
             try
             {
-                var args = new JSValue[argc];
-                for (int i = 0; i < argc; i++)
+                JSValue[] args;
+                if (argc == 0)
                 {
-                    args[i] = Marshal.PtrToStructure<JSValue>(argv + i * Marshal.SizeOf<JSValue>());
+                    args = Array.Empty<JSValue>();
+                }
+                else
+                {
+                    args = new JSValue[argc];
+                    unsafe
+                    {
+                        new ReadOnlySpan<JSValue>((void*)argv, argc).CopyTo(args);
+                    }
                 }
                 var result = handler(args);
                 return ManagedToJSValue(result);
             }
             catch (Exception ex)
             {
-                return QuickJSNative.QJS_ThrowInternalError(ctx, ex.Message);
+                return ThrowInternalError(ctx, ex.Message);
             }
         };
 
@@ -305,32 +325,20 @@ public class QuickJSRuntime
         _pinnedDelegates.Add(gcHandle);
         var funcPtr = Marshal.GetFunctionPointerForDelegate(nativeFunc);
 
-        QuickJSNative.QJS_SetPropertyFunctionStr(_context, obj, name, funcPtr, argCount);
+        Utf8StringHelper.WithUtf8(name, (pName, _) =>
+        {
+            QuickJSNative.QJS_SetPropertyFunctionStrPtr(_context, obj, pName, funcPtr, argCount);
+            return 0;
+        });
     }
 
 
     /// <summary>
-    /// Call a JavaScript function.
+    /// Call a JavaScript function. Uses stack-allocated argv for ≤16 arguments.
     /// </summary>
     internal JSValue Call(JSValue func, JSValue thisObj, params JSValue[] args)
     {
-        if (args.Length == 0)
-        {
-            return QuickJSNative.QJS_Call(_context, func, thisObj, 0, IntPtr.Zero);
-        }
-
-        int size = Marshal.SizeOf<JSValue>();
-        IntPtr argsPtr = Marshal.AllocHGlobal(size * args.Length);
-        try
-        {
-            for (int i = 0; i < args.Length; i++)
-                Marshal.StructureToPtr(args[i], argsPtr + i * size, false);
-            return QuickJSNative.QJS_Call(_context, func, thisObj, args.Length, argsPtr);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(argsPtr);
-        }
+        return CallFast(func, thisObj, args.AsSpan());
     }
 
     /// <summary>
