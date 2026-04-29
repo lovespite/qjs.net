@@ -83,6 +83,9 @@ public partial class QuickJSRuntime
 
         _eventLoop = new EventLoop(this);
         _runtimesByContext[_context] = this;
+
+        // Wire ES module loader bridge (process-global cb routed by ctx → runtime).
+        InstallModuleLoader(_runtime);
     }
 
     /// <summary>
@@ -110,6 +113,30 @@ public partial class QuickJSRuntime
         _eventLoop.Post(() =>
         {
             var val = ManagedToJSValue(result);
+            var undef = QuickJSNative.QJS_NewUndefined();
+            var r = Call(resolve, undef, val);
+            FreeValue(r);
+            FreeValue(val);
+            FreeValue(resolve);
+            FreeValue(reject);
+        });
+    }
+
+    internal void ResolvePromiseWithProjection<T>(JSValue resolve, JSValue reject, T result,
+        Func<QuickJSRuntime, T, JSValue> project)
+    {
+        _eventLoop.Post(() =>
+        {
+            JSValue val;
+            try { val = project(this, result); }
+            catch (Exception ex)
+            {
+                var err = ManagedToJSValue(ex.Message);
+                var undef0 = QuickJSNative.QJS_NewUndefined();
+                var rr = Call(reject, undef0, err);
+                FreeValue(rr); FreeValue(err); FreeValue(resolve); FreeValue(reject);
+                return;
+            }
             var undef = QuickJSNative.QJS_NewUndefined();
             var r = Call(resolve, undef, val);
             FreeValue(r);
@@ -149,7 +176,7 @@ public partial class QuickJSRuntime
     internal object? Eval(string code, string filename = "<eval>", bool asModule = false)
     {
         int flags = asModule
-            ? QuickJSNative.JS_EVAL_TYPE_MODULE
+            ? QuickJSNative.JS_EVAL_TYPE_MODULE | QuickJSNative.JS_EVAL_FLAG_ASYNC
             : QuickJSNative.JS_EVAL_TYPE_GLOBAL;
 
         var result = Utf8StringHelper.WithUtf8(code, filename, (cp, cl, fp, _) =>
@@ -207,6 +234,51 @@ public partial class QuickJSRuntime
     /// </summary>
     public void TrackWrappedObjectId(long id) => _wrappedObjectIds.Add(id);
 
+    private readonly object _disposablesLock = new();
+    private readonly List<WeakReference<IDisposable>> _trackedDisposables = new();
+
+    /// <summary>
+    /// Register an unmanaged-resource holder (e.g. a Stream wrapping a
+    /// <see cref="System.IO.FileStream"/> or HTTP response) so that it is
+    /// guaranteed to be disposed when the runtime itself is disposed, even
+    /// when JavaScript code forgot to call <c>close()</c>. Stored as a
+    /// <see cref="WeakReference{T}"/> so it does not prevent GC if the
+    /// resource is otherwise unreachable.
+    /// </summary>
+    public void TrackDisposable(IDisposable resource)
+    {
+        if (resource is null) return;
+        lock (_disposablesLock)
+            _trackedDisposables.Add(new WeakReference<IDisposable>(resource));
+    }
+
+    /// <summary>
+    /// Register a raw native callback as a global JavaScript function. The
+    /// callback receives the active context, the JS <c>this</c> value, the
+    /// argument count, and a pointer to the argv array, and must return the
+    /// resulting <see cref="JSValue"/>. The callback is responsible for its
+    /// own argument marshalling and lifetime management.
+    /// </summary>
+    public void SetGlobalRawFunction(string name,
+        Func<IntPtr, JSValue, int, IntPtr, JSValue> handler, int argCount = 0)
+    {
+        QuickJSNative.JSCFunction nativeFunc = (IntPtr ctx, JSValue thisVal, int argc, IntPtr argv) =>
+        {
+            try { return handler(ctx, thisVal, argc, argv); }
+            catch (Exception ex) { return ThrowInternalError(ctx, ex.Message); }
+        };
+        var gcHandle = GCHandle.Alloc(nativeFunc);
+        _pinnedDelegates.Add(gcHandle);
+        var funcPtr = Marshal.GetFunctionPointerForDelegate(nativeFunc);
+        var global = QuickJSNative.QJS_GetGlobalObject(_context);
+        Utf8StringHelper.WithUtf8(name, (pName, _) =>
+        {
+            QuickJSNative.QJS_SetPropertyFunctionStrPtr(_context, global, pName, funcPtr, argCount);
+            return 0;
+        });
+        QuickJSNative.QJS_FreeValue(_context, global);
+    }
+
     /// <summary>
     /// Install the static container of a <c>[JSExport]</c>-annotated type as
     /// a global JS object (mirroring its static properties &amp; methods).
@@ -236,6 +308,11 @@ public partial class QuickJSRuntime
         if (QuickJsNet.Interop.JSBinderRegistry.TryGet(value.GetType(), out var binder)
             && binder is not null)
         {
+            // Automatically track [JSExport] resources that own unmanaged
+            // state so engine.Dispose() guarantees cleanup even when JS
+            // forgot to call close().
+            if (value is IDisposable disposable)
+                TrackDisposable(disposable);
             return binder.Wrap(this, value);
         }
         return ManagedToJSValue(value);
@@ -299,9 +376,45 @@ public partial class QuickJSRuntime
     }
 
     /// <summary>
-    /// Register a C# function on a specific JS object.
-    /// </summary>
+     /// Register a C# function on a specific JS object.
+     /// </summary>
     internal void RegisterFunction(JSValue obj, string name, Func<JSValue[], object?> handler, int argCount = 0)
+    {
+        var funcPtr = MakeFunctionPtr(handler);
+        Utf8StringHelper.WithUtf8(name, (pName, _) =>
+        {
+            QuickJSNative.QJS_SetPropertyFunctionStrPtr(_context, obj, pName, funcPtr, argCount);
+            return 0;
+        });
+    }
+
+    /// <summary>
+    /// Build a callable JS function value from a managed delegate, suitable for
+    /// use as a module export, object property, or array element.
+    /// The delegate is GC-pinned for the lifetime of this runtime.
+    /// </summary>
+    internal JSValue MakeFunctionValue(string name, Delegate del, int argCount = 0)
+    {
+        var parameters = del.Method.GetParameters();
+        // Detect "spread" delegate signature: (object?[]) -> ?  (params packed into one array)
+        bool spreadStyle = parameters.Length == 1
+            && parameters[0].ParameterType == typeof(object?[]);
+
+        Func<JSValue[], object?> wrapped = jsArgs =>
+        {
+            var managedArgs = new object?[jsArgs.Length];
+            for (int i = 0; i < jsArgs.Length; i++)
+                managedArgs[i] = JSValueToManaged(jsArgs[i]);
+            return spreadStyle
+                ? del.DynamicInvoke((object?)managedArgs)
+                : del.DynamicInvoke(managedArgs);
+        };
+        var funcPtr = MakeFunctionPtr(wrapped);
+        if (argCount <= 0) argCount = spreadStyle ? 0 : parameters.Length;
+        return QuickJSNative.QJS_NewCFunction(_context, funcPtr, name, argCount);
+    }
+
+    private IntPtr MakeFunctionPtr(Func<JSValue[], object?> handler)
     {
         QuickJSNative.JSCFunction nativeFunc = (IntPtr ctx, JSValue thisVal, int argc, IntPtr argv) =>
         {
@@ -328,16 +441,9 @@ public partial class QuickJSRuntime
                 return ThrowInternalError(ctx, ex.Message);
             }
         };
-
         var gcHandle = GCHandle.Alloc(nativeFunc);
         _pinnedDelegates.Add(gcHandle);
-        var funcPtr = Marshal.GetFunctionPointerForDelegate(nativeFunc);
-
-        Utf8StringHelper.WithUtf8(name, (pName, _) =>
-        {
-            QuickJSNative.QJS_SetPropertyFunctionStrPtr(_context, obj, pName, funcPtr, argCount);
-            return 0;
-        });
+        return Marshal.GetFunctionPointerForDelegate(nativeFunc);
     }
 
 
@@ -652,6 +758,16 @@ public partial class QuickJSRuntime
     }
 
     /// <summary>
+    /// Execute JavaScript code as an ES module (supports <c>import</c>/<c>export</c>
+    /// and top-level <c>await</c>). The event loop is pumped until the module
+    /// has finished evaluating.
+    /// </summary>
+    public object? ExecuteModule(string scriptCode, string fileName = "<module>")
+    {
+        return _eventLoop.Execute(scriptCode, fileName, asModule: true);
+    }
+
+    /// <summary>
     /// 检查全局作用域中是否存在指定名称的函数
     /// </summary>
     public bool HasFunction(string functionName)
@@ -700,6 +816,29 @@ public partial class QuickJSRuntime
         if (_context != IntPtr.Zero)
         {
             _runtimesByContext.TryRemove(_context, out _);
+
+            // Force-close any [JSExport] resources (Stream, DirectoryStream,
+            // FetchResponse...) that JS code never explicitly closed. Held as
+            // weak refs so we ignore ones already collected.
+            List<IDisposable>? live = null;
+            lock (_disposablesLock)
+            {
+                foreach (var wr in _trackedDisposables)
+                {
+                    if (wr.TryGetTarget(out var d))
+                    {
+                        (live ??= new List<IDisposable>()).Add(d);
+                    }
+                }
+                _trackedDisposables.Clear();
+            }
+            if (live is not null)
+            {
+                foreach (var d in live)
+                {
+                    try { d.Dispose(); } catch { /* swallow: best-effort cleanup */ }
+                }
+            }
 
             // Release any object-table ids we created for [JSExport] wrappers
             // associated with this runtime.

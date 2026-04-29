@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>事件循环 · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>事件循环 &amp; Promise</h1>
+<p class="lede">qjs.net 的运行时模型与 Promise 调度规则。</p>
+
+<section id="sec0" data-keywords="model thread single threaded 模型 线程">
+<h2>线程模型</h2>
+<ul>
+<li>每个 <code>QuickJSEngine</code> 拥有一个 QuickJS Runtime + Context，<b>单线程</b>使用。</li>
+<li>所有 JS 代码（包括从 <code>Task</code> 转换来的 Promise 回调）都在调用 <code>Execute()</code> 的线程上执行。</li>
+<li>C# <code>async</code> 方法在 JS 端 <code>await</code> 后回到 JS 时，回调会被 marshal 回 <b>原 EventLoop 线程</b> —— 你不会在 JS 中看到跨线程 race。</li>
+<li>不要从多个 .NET 线程并发调用同一个 <code>QuickJSEngine</code>。</li>
+</ul>
+</section>
+
+<section id="sec1" data-keywords="execute eval pump await 顶层 await">
+<h2>Execute 的语义</h2>
+<p><code>engine.Execute(code)</code> 大致等价于：</p>
+<pre><code><span class="kw">var</span> p = JS_Eval(code, JS_EVAL_FLAG_ASYNC);   <span class="com">// 包成 async 函数</span>
+<span class="kw">while</span> (!settled(p)) {
+    JS_ExecutePendingJob();                       <span class="com">// 先解 microtask</span>
+    eventLoop.RunOneTick();                       <span class="com">// 再处理定时器/已完成 Task</span>
+}
+<span class="kw">return</span> resolveValue(p);</code></pre>
+<p>因此 <code>Execute</code> 内可写：</p>
+<pre><code><span class="kw">await</span> fetch(<span class="str">'https://...'</span>);
+<span class="kw">await</span> fsAsync.writeFile(<span class="str">'log.txt'</span>, <span class="str">'done\n'</span>);</code></pre>
+</section>
+
+<section id="sec2" data-keywords="microtask queueMicrotask Promise then chain">
+<h2>Microtask &amp; Promise</h2>
+<ul>
+<li>QuickJS 内部维护一个 microtask 队列；EventLoop 在每次 tick 都会先 drain 它。</li>
+<li><code>queueMicrotask(fn)</code> 全局可用。</li>
+<li>所有 <code>.then(...)</code> 链都在同一个 EventLoop 上推进；<code>(await fetch(url).then(r =&gt; r.json())).x</code> 会正确解开。</li>
+</ul>
+</section>
+
+<section id="sec3" data-keywords="timers setTimeout setInterval delay 定时器">
+<h2>定时器</h2>
+<p><code>setTimeout(fn, delayMs)</code> / <code>setInterval(fn, periodMs)</code> / <code>clearTimeout</code> / <code>clearInterval</code> 全部由内置 EventLoop 调度。<b>它们只在 <code>Execute</code> 还在 pump 时触发</b>——没有后台线程偷偷推进时钟。</p>
+<p>如果你需要后台进程持续运行，可在 .NET 端开线程，反复调用 <code>engine.Execute("eventLoop.runOnce()")</code> 之类的入口（参见 <code>EventLoop.RunUntilDone</code>）。</p>
+</section>
+
+<section id="sec4" data-keywords="task promise from to 转换">
+<h2>Task ↔ Promise 互通</h2>
+<p>C# 端：<code>JSPromiseBridge.FromTask(rt, task)</code> 把 <code>Task</code> 转成 JS Promise；continuation 通过 <code>EventLoop.Post()</code> marshal 回主线程。</p>
+<p>JS 端：所有 <code>[JSExport]</code> 方法若 C# 签名为 <code>async</code>，在 JS 中即返回 Promise；<code>await</code> 即可。</p>
+</section>
+
+<section id="sec5" data-keywords="deadlock blocking 阻塞">
+<h2>不要做的事</h2>
+<div class="box err"><span class="label">不要</span>在被 JS 调用的同步 C# 方法里 <code>.Wait()</code> 或 <code>.Result</code> 一个未完成的 <code>Task</code>——若该 Task 的完成依赖 EventLoop 推进（例如又 post 了一个回调），会死锁。改为：把方法标 <code>async</code>，让生成器把它桥成 Promise。</div>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

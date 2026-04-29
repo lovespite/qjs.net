@@ -63,3 +63,33 @@ public partial class AsyncWork
     public Task DelayAsync()
         => Task.CompletedTask;
 }
+
+[JSExport]
+public partial class ContainerBag
+{
+    public string[] Names() => new[] { "a", "b", "c" };
+
+    public List<int> Numbers() => new() { 1, 2, 3, 4 };
+
+    public Dictionary<string, string> Headers() => new()
+    {
+        ["x-key"] = "v1",
+        ["x-other"] = "v2",
+    };
+
+    public Dictionary<string, object> Mixed() => new()
+    {
+        ["count"] = 42,
+        ["name"] = "abc",
+        ["ok"] = true,
+    };
+
+    public int SumOfList(List<int> values)
+    {
+        int s = 0;
+        if (values != null) foreach (var v in values) s += v;
+        return s;
+    }
+
+    public string Concat(string[] parts) => parts is null ? "" : string.Join(",", parts);
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Timers · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>Timers</h1>
+<p class="lede">setTimeout · setInterval · clearTimeout · clearInterval · queueMicrotask。</p>
+
+<section id="sec0" data-keywords="setTimeout setInterval clear">
+<h2>API</h2>
+<div class="sig">setTimeout(fn: () =&gt; void, delayMs: number): number</div>
+<div class="sig">setInterval(fn: () =&gt; void, periodMs: number): number</div>
+<div class="sig">clearTimeout(id: number): void</div>
+<div class="sig">clearInterval(id: number): void</div>
+<div class="sig">queueMicrotask(fn: () =&gt; void): void</div>
+</section>
+
+<section id="sec1" data-keywords="schedule eventloop pump 调度">
+<h2>语义</h2>
+<ul>
+<li>所有定时器由 <a href="eventloop.html">EventLoop</a> 在调用 <code>Execute</code> 期间推进；不存在后台线程暗自触发回调。</li>
+<li>没有等待中的回调时 <code>Execute</code> 立即返回；之后的 <code>setTimeout</code> 回调不会被触发，除非再次 <code>Execute</code>。</li>
+<li>microtask（来自 Promise / queueMicrotask）总是优先于宏任务（定时器、Task continuation）执行。</li>
+</ul>
+</section>
+
+<section id="sec2" data-keywords="example 示例">
+<h2>示例</h2>
+<pre><code>engine.Execute(<span class="str">@"
+    let i = 0;
+    let id = setInterval(() =&gt; {
+        if (++i &gt;= 3) { clearInterval(id); }
+        console.log('tick', i);
+    }, 50);
+    await new Promise(r =&gt; setTimeout(r, 200));
+"</span>);
+</code></pre>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

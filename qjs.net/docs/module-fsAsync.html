@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>fsAsync · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>fsAsync</h1>
+<p class="lede">异步文件系统模块；所有方法返回 Promise，由内置 EventLoop 调度。</p>
+
+<section id="sec0" data-keywords="enable opt 启用">
+<h2>启用</h2>
+<pre><code><span class="kw">new</span> QuickJSEngine(opt =&gt; {
+    opt.AsyncFileSystem    = <span class="kw">true</span>;
+    opt.FileSystemBasePath = <span class="str">@"C:\sandbox"</span>;
+});</code></pre>
+</section>
+
+<section id="sec1" data-keywords="api signatures 接口">
+<h2>接口</h2>
+<p>除返回 Promise 之外，签名与 <a href="module-fs.html">fs</a> 一一对应，包含同样的查询/操作/读写/流入口：</p>
+<ul>
+<li><code>readFile / readFileBytes</code></li>
+<li><code>writeFile / writeFileBytes / appendFile</code></li>
+<li><code>exists / isFile / isDirectory / stat</code></li>
+<li><code>readDir</code></li>
+<li><code>remove / rename / copy / mkdir</code></li>
+<li><code>getcwd / tempDir</code></li>
+<li><code>openRead(path): Promise&lt;Stream&gt;</code></li>
+<li><code>openWrite(path, append?): Promise&lt;Stream&gt;</code></li>
+<li><code>openDir(path): Promise&lt;DirectoryStream&gt;</code></li>
+<li><code>getOpenFileName / getSaveFileName</code>（Windows 对话框；可选）</li>
+</ul>
+</section>
+
+<section id="sec2" data-keywords="example async pipe 示例">
+<h2>示例</h2>
+<pre><code><span class="com">// 复制大文件，零跨语言往返</span>
+<span class="kw">var</span> src = <span class="kw">await</span> fsAsync.openRead(<span class="str">'big-input.bin'</span>);
+<span class="kw">var</span> dst = <span class="kw">await</span> fsAsync.openWrite(<span class="str">'big-output.bin'</span>);
+<span class="kw">var</span> n   = <span class="kw">await</span> src.pipe(dst);    <span class="com">// dst 自动关闭</span>
+<span class="kw">await</span> src.close();
+console.log(<span class="str">'copied'</span>, n, <span class="str">'bytes'</span>);
+</code></pre>
+</section>
+
+<section id="sec3" data-keywords="execute requirement 注意">
+<h2>注意</h2>
+<div class="box warn"><span class="label">注意</span>所有 fsAsync 调用必须包在 <code>engine.Execute(...)</code> 中；<code>Eval</code> 不会 pump 事件循环。</div>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

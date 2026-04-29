@@ -189,8 +189,7 @@ if (typeof globalThis.queueMicrotask === 'undefined') {
 
         foreach (var id in toFire)
         {
-            if (!_timers.ContainsKey(id)) continue;
-            var entry = _timers[id];
+            if (!_timers.TryGetValue(id, out var entry)) continue;
             if (entry.Cancelled) continue;
 
             // Hold an extra reference so that clearInterval/clearTimeout
@@ -238,9 +237,11 @@ if (typeof globalThis.queueMicrotask === 'undefined') {
     /// Uses our event loop to drive promise settlement instead of QJS_StdAwait,
     /// avoiding deadlocks when async operations post to the EventLoop queue.
     /// </summary>
-    internal object? Execute(string code, string filename = "<eval>")
+    internal object? Execute(string code, string filename = "<eval>", bool asModule = false)
     {
-        int flags = QuickJSNative.JS_EVAL_TYPE_GLOBAL | QuickJSNative.JS_EVAL_FLAG_ASYNC;
+        int flags = (asModule
+            ? QuickJSNative.JS_EVAL_TYPE_MODULE
+            : QuickJSNative.JS_EVAL_TYPE_GLOBAL) | QuickJSNative.JS_EVAL_FLAG_ASYNC;
         var promise = _engine.EvalRaw(code, filename, flags);
 
         if (promise.IsException)

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Stream · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>Stream</h1>
+<p class="lede">统一字节流抽象 · C# 端实现的 pipe · 引擎兜底关闭。</p>
+
+<section id="sec0" data-keywords="stream design pipe 设计">
+<h2>设计</h2>
+<ul>
+<li>包装任意 <code>System.IO.Stream</code>（文件、内存、HTTP 响应体……）。</li>
+<li>read / write 为异步（返回 Promise）；<code>pipe</code> 在 C# 端用循环实现，避免 per-chunk JS↔native 往返。</li>
+<li>所有 Stream 实例由引擎登记跟踪——即使 JS 忘记 <code>close()</code>，引擎销毁时也会强制释放底层句柄。</li>
+</ul>
+</section>
+
+<section id="sec1" data-keywords="static memory 静态">
+<h2>静态方法 <span class="tag static">static</span></h2>
+<div class="sig">Stream.memory(initialCapacity?: number): Stream</div>
+<p>创建可读可写的内存 Stream（基于 <code>MemoryStream</code>），常用作 <code>pipe</code> 的目的地。</p>
+</section>
+
+<section id="sec2" data-keywords="properties readable writable closed length 属性">
+<h2>属性</h2>
+<div class="sig">readable: boolean</div>
+<div class="sig">writable: boolean</div>
+<div class="sig">closed: boolean</div>
+<div class="sig">position: number</div>
+<div class="sig">length: number</div>
+<p>不可 seek 时 <code>position</code> / <code>length</code> 为 <code>-1</code>。</p>
+</section>
+
+<section id="sec3" data-keywords="read write methods 异步">
+<h2>方法</h2>
+<div class="sig">read(buf: Buffer, offset?: number, length?: number): Promise&lt;number&gt; <span class="tag async">async</span></div>
+<p>读到 <code>buf</code> 的 <code>[offset, offset+length)</code>。<code>length</code> 缺省/<=0 时为 <code>buf.length-offset</code>。返回实际读入字节数；0 表示 EOF。</p>
+
+<div class="sig">write(data, offset?: number, length?: number): Promise&lt;number&gt; <span class="tag async">async</span></div>
+<p><code>data</code> 接受 <code>Buffer</code> / <code>ArrayBuffer</code> / <code>Uint8Array</code> / <code>string</code>（按 UTF-8 编码）。<code>length</code> 缺省/<=0 时写入剩余全部。</p>
+
+<div class="sig">flush(): Promise&lt;void&gt; <span class="tag async">async</span></div>
+<div class="sig">close(): Promise&lt;void&gt; <span class="tag async">async</span></div>
+<p>幂等。关闭后其它方法抛 <code>InvalidOperationException("Stream is closed")</code>。</p>
+
+<div class="sig">pipe(dest: Stream, chunkSize?: number): Promise&lt;number&gt; <span class="tag async">async</span></div>
+<p>按 chunkSize（缺省/<=0 时 64 KiB）拷贝本流剩余字节到 <code>dest</code>，<b>始终</b>在完成时关闭 <code>dest</code>。返回总字节数。</p>
+
+<div class="sig">readAll(maxBytes?: number): Promise&lt;Buffer&gt; <span class="tag async">async</span></div>
+<p>一次读完剩余字节到新 Buffer。<code>maxBytes</code> 缺省/<=0 时不限。</p>
+</section>
+
+<section id="sec4" data-keywords="lifecycle dispose engine 生命周期 释放">
+<h2>生命周期与资源安全</h2>
+<ul>
+<li><b>显式 close 优先</b>：建议在 finally 中 <code>await s.close()</code>。</li>
+<li><b>引擎兜底</b>：未关闭的 Stream 会在 <code>engine.Dispose()</code> 时被强制 Dispose（含底层 FileStream / HttpResponseMessage）。</li>
+<li><b>幂等</b>：多次 close 安全；并发调用 close 与 read/write 时，未完成的 IO 会抛 ObjectDisposedException。</li>
+</ul>
+</section>
+
+<section id="sec5" data-keywords="example pipe download 示例">
+<h2>示例：HTTP 响应体直接 pipe 到文件</h2>
+<pre><code><span class="kw">var</span> resp = <span class="kw">await</span> fetch(<span class="str">'https://example.com/large.bin'</span>);
+<span class="kw">var</span> src  = resp.body();                       <span class="com">// 流式响应体</span>
+<span class="kw">var</span> dst  = fs.openWrite(<span class="str">'large.bin'</span>);
+<span class="kw">var</span> n    = <span class="kw">await</span> src.pipe(dst);              <span class="com">// dst 完成后自动关闭</span>
+<span class="kw">await</span> src.close();
+console.log(<span class="str">'downloaded'</span>, n, <span class="str">'bytes'</span>);
+</code></pre>
+
+<h2>示例：Stream.memory 作为内存 sink</h2>
+<pre><code><span class="kw">var</span> sink = Stream.memory();
+<span class="kw">await</span> sink.write(Buffer.from(<span class="str">'hello'</span>));
+<span class="kw">await</span> sink.write(<span class="str">' world'</span>);            <span class="com">// 字符串按 UTF-8</span>
+sink.length;                                <span class="com">// 11</span>
+<span class="kw">await</span> sink.close();
+</code></pre>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

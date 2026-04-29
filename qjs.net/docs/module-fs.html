@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>fs · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>fs (sync)</h1>
+<p class="lede">同步文件系统模块。在调用线程上阻塞执行；读写大文件请用 <a href="module-stream.html">Stream</a> 流式入口。</p>
+
+<section id="sec0" data-keywords="enable basepath 启用">
+<h2>启用</h2>
+<pre><code><span class="kw">new</span> QuickJSEngine(opt =&gt; {
+    opt.FileSystem         = <span class="kw">true</span>;
+    opt.FileSystemBasePath = <span class="str">@"C:\sandbox"</span>;
+});</code></pre>
+<p>所有相对路径都解析在 <code>FileSystemBasePath</code> 下；为空时使用进程当前目录。</p>
+</section>
+
+<section id="sec1" data-keywords="text bytes file read 读">
+<h2>读取</h2>
+<div class="sig">readFile(path, encoding?: string): string</div>
+<div class="sig">readFileBytes(path): ArrayBuffer</div>
+</section>
+
+<section id="sec2" data-keywords="write append text bytes 写">
+<h2>写入</h2>
+<div class="sig">writeFile(path, content: string, encoding?: string): boolean</div>
+<div class="sig">writeFileBytes(path, buffer: Buffer | ArrayBufferView | ArrayBuffer): boolean</div>
+<div class="sig">appendFile(path, content: string, encoding?: string): boolean</div>
+</section>
+
+<section id="sec3" data-keywords="open stream openRead openWrite openDir 流式">
+<h2>流式入口 <span class="tag">流</span></h2>
+<div class="sig">openRead(path): Stream</div>
+<div class="sig">openWrite(path, append?: boolean): Stream</div>
+<div class="sig">openDir(path): DirectoryStream</div>
+<p>返回的 <a href="module-stream.html">Stream</a> / <a href="module-directorystream.html">DirectoryStream</a> 由引擎登记，未关闭时引擎销毁会兜底关闭。</p>
+</section>
+
+<section id="sec4" data-keywords="exists isFile isDirectory stat 信息">
+<h2>查询</h2>
+<div class="sig">exists(path): boolean</div>
+<div class="sig">isFile(path): boolean</div>
+<div class="sig">isDirectory(path): boolean</div>
+<div class="sig">stat(path): { size, isFile, isDirectory, created, modified, accessed } | null</div>
+<div class="sig">readDir(path): string[]</div>
+</section>
+
+<section id="sec5" data-keywords="manipulate remove rename copy mkdir 操作">
+<h2>操作</h2>
+<div class="sig">remove(path): boolean</div>
+<div class="sig">rename(oldPath, newPath): boolean</div>
+<div class="sig">copy(src, dst): boolean</div>
+<div class="sig">mkdir(path): boolean</div>
+<div class="sig">getcwd(): string</div>
+<div class="sig">tempDir(): string</div>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

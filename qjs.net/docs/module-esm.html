@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>ES Modules · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>ES Modules（import / export）</h1>
+<p class="lede">标准 ESM 语法 · 虚拟模块 · 文件系统模块 · 自定义解析器 · 顶层 await · 动态 import。</p>
+
+<section id="sec0" data-keywords="overview esm import export 概述">
+<h2>能做什么</h2>
+<ul>
+<li>JS 端使用 <code>import { x } from "..."</code> / <code>export const x = ...</code> / <code>export default ...</code>。</li>
+<li>顶层 <code>await</code>（模块求值是异步的，由内置 EventLoop 驱动）。</li>
+<li>动态 <code>import("...")</code>，返回模块命名空间 Promise。</li>
+<li>循环导入（QuickJS 自带 dedupe）。</li>
+</ul>
+</section>
+
+<section id="sec1" data-keywords="config modules basepath register resolver 解析">
+<h2>三种模块来源</h2>
+<p>所有模块解析均通过 <code>engine.Modules</code>（<code>ModuleLoader</code>）完成。解析顺序：<b>虚拟模块 → 自定义 Resolver → 文件系统</b>。</p>
+<pre><code><span class="kw">using var</span> engine = <span class="kw">new</span> QuickJSEngine();
+
+<span class="com">// 1) 虚拟模块（内存中注册源码）</span>
+engine.Modules.Register(<span class="str">"math"</span>, <span class="str">"export const add = (a,b) =&gt; a+b;"</span>);
+
+<span class="com">// 2) 文件系统沙箱（限定根目录）</span>
+engine.Modules.BasePath = <span class="str">@"D:\scripts"</span>;   <span class="com">// 之后允许 "./a.mjs" / "/abs/inside/sandbox"</span>
+
+<span class="com">// 3) 自定义解析器（最高优先级，仅用于在已注册之外动态生成源）</span>
+engine.Modules.Resolver = name =&gt; name == <span class="str">"hello"</span> ? <span class="str">"export default 'hi';"</span> : <span class="kw">null</span>;
+</code></pre>
+</section>
+
+<section id="sec2" data-keywords="execute module run 执行">
+<h2>执行模块代码</h2>
+<p>有两种入口：</p>
+<ul>
+<li><code>engine.ExecuteModule(src, fileName?)</code> —— 把 <code>src</code> 当作模块源（支持 <code>import / export</code>）执行；返回值为该模块的求值结果（通常 <code>undefined</code>，模块的输出请通过 <code>globalThis</code> 或 <code>engine.Import(...)</code> 取回）。</li>
+<li><code>engine.Import(specifier)</code> —— 等价于在 JS 里 <code>const m = await import(specifier)</code>，返回一个 .NET 字典样的对象（实际上是 JSON 化的对象字符串，因为引擎约定如此；解析它请用 <code>System.Text.Json</code>）。</li>
+</ul>
+<pre><code>engine.Modules.Register(<span class="str">"util"</span>, <span class="str">"export const x = 42;"</span>);
+<span class="kw">var</span> ns = engine.Import(<span class="str">"util"</span>);     <span class="com">// '{"x":42}'</span>
+
+engine.ExecuteModule(<span class="str">@"
+    import { add } from 'math';
+    globalThis.result = add(1, 2);
+"</span>);
+<span class="kw">var</span> r = engine.GetGlobal(<span class="str">"result"</span>);   <span class="com">// 3</span>
+</code></pre>
+</section>
+
+<section id="sec3" data-keywords="specifier path 命名">
+<h2>Specifier 命名约定</h2>
+<table>
+<tr><th>形式</th><th>含义</th></tr>
+<tr><td><code>"foo"</code> / <code>"my-mod"</code></td><td>裸 specifier。先查 <code>Modules.Register</code>，再查 <code>Resolver</code>。</td></tr>
+<tr><td><code>"./a.js"</code> / <code>"../b.mjs"</code></td><td>相对路径。需要先设置 <code>Modules.BasePath</code>。</td></tr>
+<tr><td><code>"/abs/c.js"</code></td><td>绝对路径，必须落在 <code>BasePath</code> 内（沙箱）。</td></tr>
+<tr><td><code>"qjs:fs"</code> / <code>"qjs:fetch"</code> 等</td><td>内置模块，需启用 <code>BuiltinAsModule</code> 选项（见下方）。</td></tr>
+<tr><td>用户自定 native 模块</td><td>通过 <code>Modules.RegisterNative(name, builder =&gt; ...)</code> 注册，可使用任意名字。</td></tr>
+</table>
+<p>不会自动补 <code>.js</code> / <code>.mjs</code> 扩展名；用户写完整文件名。</p>
+</section>
+
+<section id="sec4" data-keywords="async tla await dynamic 动态">
+<h2>顶层 await &amp; 动态 import</h2>
+<pre><code>engine.Modules.Register(<span class="str">"slow"</span>, <span class="str">@"
+    await new Promise(r =&gt; setTimeout(r, 10));
+    export const ready = true;
+"</span>);
+
+engine.ExecuteModule(<span class="str">@"
+    const m = await import('slow');
+    globalThis.ok = m.ready;
+"</span>);
+<span class="com">// engine.GetGlobal(""ok"") === true</span>
+</code></pre>
+</section>
+
+<section id="sec5" data-keywords="errors limits 限制">
+<h2>当前限制</h2>
+<ul>
+<li>不支持 <code>import attributes</code> / <code>import assert { type: "json" }</code>。</li>
+<li>不支持 <code>https://</code>、<code>node:</code>、<code>data:</code> 等 URL specifier。</li>
+<li>同一 specifier 字符串被 QuickJS 视为同一模块（dedupe），不要用相对路径绕过缓存。</li>
+</ul>
+<p>模块源码大小不再受 1 MiB 限制（Phase B-1 起改为按需 <code>js_malloc</code>）。</p>
+</section>
+
+<section id="sec-native" data-keywords="native registernative builder export 原生模块">
+<h2>原生模块（C# 注册）</h2>
+<p>通过 <code>engine.Modules.RegisterNative(name, builder =&gt; ...)</code> 把 C# 值/函数/类暴露成 ES Module。Specifier 由你自己取（建议用 <code>qjs:xxx</code> 或 <code>app:xxx</code> 命名空间）。</p>
+<pre><code>engine.Modules.RegisterNative(<span class="str">"app:math"</span>, b =&gt;
+{
+    b.Export(<span class="str">"PI"</span>, <span class="num">3.14159</span>);
+    b.ExportFunc(<span class="str">"add"</span>, <span class="kw">new</span> Func&lt;<span class="kw">int</span>, <span class="kw">int</span>, <span class="kw">int</span>&gt;((a, b) =&gt; a + b));
+    b.ExportDefault(<span class="str">"hello"</span>);
+});
+
+engine.ExecuteModule(<span class="str">@"
+    import def, { PI, add } from 'app:math';
+    globalThis.r = add(1, 2);          // 3
+    globalThis.p = PI;                 // 3.14159
+    globalThis.d = def;                // 'hello'
+"</span>);
+</code></pre>
+<p>Builder API：<code>Export(name, value)</code> / <code>ExportFunc(name, Delegate)</code> / <code>ExportFactory(name, factory)</code>（延迟求值）/ <code>ExportDefault(value)</code> / <code>ExportDefaultFunc</code> / <code>ExportDefaultFactory</code> / <code>ExportRaw(name, JSValue)</code>。</p>
+</section>
+
+<section id="sec-builtin" data-keywords="builtin qjs fs fetch buffer 内置 esm">
+<h2>把内置模块当 ESM 使用</h2>
+<p>默认所有内置 API 都是 globals（<code>fs</code> / <code>fetch</code> / <code>Buffer</code> ...）。把 <code>BuiltinAsModule</code> 打开后，同一份实现也可通过 <code>import</code> 拉取：</p>
+<pre><code><span class="kw">var</span> opt = <span class="kw">new</span> QuickJSEngineOptions {
+    BuiltinAsModule = <span class="kw">true</span>,        <span class="com">// 让 qjs:fs / qjs:fetch ... 可 import</span>
+    BuiltinAsModuleOnly = <span class="kw">false</span>,    <span class="com">// true 则同时移除 globals（沙箱场景）</span>
+};
+<span class="kw">using var</span> engine = <span class="kw">new</span> QuickJSEngine(opt);
+
+engine.ExecuteModule(<span class="str">@"
+    import { readFileSync } from 'qjs:fs';
+    import { fetch } from 'qjs:fetch';
+    import { Buffer } from 'qjs:buffer';
+    globalThis.t = readFileSync('./README.md');
+"</span>);
+</code></pre>
+<p>支持桥接的模块名：<code>qjs:fs</code>、<code>qjs:fsAsync</code>、<code>qjs:fetch</code>、<code>qjs:buffer</code>、<code>qjs:stream</code>、<code>qjs:directorystream</code>、<code>qjs:timers</code>、<code>qjs:encoder</code>、<code>qjs:dialogs</code>。每个模块的导出名就是对应 global 的属性名。</p>
+</section>
+
+<section id="sec-import-meta" data-keywords="import.meta url main 元信息">
+<h2>import.meta</h2>
+<p>每个模块都有 <code>import.meta</code>，目前提供两个字段：</p>
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>import.meta.url</code></td><td>string</td><td>模块 URL，按来源生成（见下表）。</td></tr>
+<tr><td><code>import.meta.main</code></td><td>boolean</td><td>当前为占位（始终 <code>false</code>），保留给后续标记入口模块用。</td></tr>
+</table>
+<table>
+<tr><th>模块来源</th><th>URL 形式</th></tr>
+<tr><td>文件系统（<code>BasePath</code>）</td><td><code>file:///&lt;绝对路径，正斜杠&gt;</code></td></tr>
+<tr><td>虚拟模块（<code>Register</code>）</td><td><code>qjs-virtual:&lt;name&gt;</code></td></tr>
+<tr><td>原生模块（<code>RegisterNative</code>）</td><td><code>qjs-native:&lt;name&gt;</code></td></tr>
+<tr><td>自定义 Resolver</td><td><code>qjs-resolver:&lt;name&gt;</code></td></tr>
+</table>
+<pre><code>engine.Modules.Register(<span class="str">"foo"</span>, <span class="str">"export const u = import.meta.url;"</span>);
+engine.ExecuteModule(<span class="str">"import { u } from 'foo'; globalThis.x = u;"</span>);
+<span class="com">// engine.GetGlobal("x") === "qjs-virtual:foo"</span>
+</code></pre>
+</section>
+
+<section id="sec6" data-keywords="dts">
+<h2>更多</h2>
+<p>另见 <a href="getting-started.html">快速上手</a>、<a href="limitations.html">总览限制</a>，以及 TypeScript 声明 <code>index.d.ts</code> 末尾的 ES Modules 段落。</p>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

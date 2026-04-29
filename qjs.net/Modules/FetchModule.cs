@@ -1,8 +1,10 @@
 using QuickJsNet.Core;
+using QuickJsNet.Interop;
 using QuickJSNet.Bindings;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace QuickJsNet.Modules;
@@ -23,386 +25,318 @@ public class FetchModuleOptions
 }
 
 /// <summary>
-/// Registers a `fetch` function into the QuickJS engine.
-/// <br />
-/// JS API:<br />
-///   fetch(url: string, options?: {<br />
-///     method?: string,       // GET, POST, PUT, DELETE, PATCH, HEAD<br />
-///     headers?: object,      // { "Content-Type": "application/json" }<br />
-///     body?: string,         // Request body<br />
-///     timeout?: number,      // Timeout in ms<br />
-///     proxy?: string,        // Override proxy URL for this request<br />
-///     ignoreSslErrors?: boolean // Override SSL setting for this request<br />
-///   }): Promise&lt;{<br />
-///     ok: boolean,<br />
-///     status: number,<br />
-///     statusText: string,<br />
-///     headers: object,<br />
-///     text: () => Promise<string>,<br />
-///     json: () => Promise<any>,<br />
-///     arrayBuffer: () => Promise<ArrayBuffer>,<br />
-///     url: string<br />
-///   }&gt;
+/// A fetch HTTP response wrapped as a [JSExport] proxy. Properties expose
+/// status/headers/url. Methods <c>text()</c> / <c>arrayBuffer()</c> / <c>json()</c>
+/// each return a Promise. Read methods consume the body once.
+/// </summary>
+[JSExport]
+public sealed partial class FetchResponse : IDisposable
+{
+    private HttpResponseMessage? _response;
+    private readonly Dictionary<string, string> _headers;
+
+    public bool Ok { get; }
+    public int Status { get; }
+    public string StatusText { get; }
+    public string Url { get; }
+
+    public Dictionary<string, string> Headers => _headers;
+
+    internal FetchResponse(HttpResponseMessage response, string url)
+    {
+        _response = response;
+        Url = url;
+        Ok = response.IsSuccessStatusCode;
+        Status = (int)response.StatusCode;
+        StatusText = response.ReasonPhrase ?? string.Empty;
+
+        _headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var h in response.Headers)
+            _headers[h.Key] = string.Join(", ", h.Value);
+        foreach (var h in response.Content.Headers)
+            _headers[h.Key] = string.Join(", ", h.Value);
+    }
+
+    /// <summary>Read the body as text. Consumes the response.</summary>
+    public Task<string> Text() => Task.Run(async () =>
+    {
+        var resp = Interlocked.Exchange(ref _response, null)
+            ?? throw new InvalidOperationException("Response already read or disposed");
+        using (resp)
+        {
+            return await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+    });
+
+    /// <summary>Read the body as an ArrayBuffer (byte[]). Consumes the response.</summary>
+    public Task<byte[]> ArrayBuffer() => Task.Run(async () =>
+    {
+        var resp = Interlocked.Exchange(ref _response, null)
+            ?? throw new InvalidOperationException("Response already read or disposed");
+        using (resp)
+        {
+            return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+        }
+    });
+
+    /// <summary>
+    /// Read the body as text, then JSON.parse it on the JS thread and resolve
+    /// with the parsed value. Consumes the response.
+    /// </summary>
+    private static readonly byte[] s_jsonFilename = "<fetch.json>\0"u8.ToArray();
+
+    public JSValue Json(QuickJSRuntime runtime)
+    {
+        var task = Text();
+        return JSPromiseBridge.FromTaskWithJsProjection(runtime, task, (rt, txt) =>
+        {
+            var s = txt ?? "null";
+            var bytes = Encoding.UTF8.GetBytes(s);
+            unsafe
+            {
+                fixed (byte* p = bytes)
+                fixed (byte* fp = s_jsonFilename)
+                {
+                    return QuickJSNative.QJS_ParseJSONPtr(rt.Context, (IntPtr)p,
+                        (nuint)bytes.Length, (IntPtr)fp);
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Take ownership of the response body as a streaming <see cref="Stream"/>.
+    /// Mutually exclusive with <see cref="Text"/> / <see cref="ArrayBuffer"/> /
+    /// <see cref="Json"/> — the first reader wins; subsequent readers throw
+    /// <see cref="InvalidOperationException"/>. The returned stream owns the
+    /// <see cref="HttpResponseMessage"/> and disposes it when closed.
+    /// </summary>
+    public Stream Body()
+    {
+        var resp = Interlocked.Exchange(ref _response, null)
+            ?? throw new InvalidOperationException("Response already read or disposed");
+        var inner = resp.Content.ReadAsStream();
+        return new Stream(new HttpOwningStream(resp, inner),
+            readable: true, writable: false, ownsInner: true);
+    }
+
+    public void Dispose()
+    {
+        var resp = Interlocked.Exchange(ref _response, null);
+        resp?.Dispose();
+    }
+
+    ~FetchResponse() => Dispose();
+}
+
+/// <summary>
+/// A wrapper Stream that disposes the owning <see cref="HttpResponseMessage"/>
+/// alongside the content stream. Lets us hand a single <see cref="System.IO.Stream"/>
+/// to <see cref="Modules.Stream"/> without leaking the response.
+/// </summary>
+internal sealed class HttpOwningStream : System.IO.Stream
+{
+    private readonly HttpResponseMessage _resp;
+    private readonly System.IO.Stream _inner;
+
+    public HttpOwningStream(HttpResponseMessage resp, System.IO.Stream inner)
+    {
+        _resp = resp;
+        _inner = inner;
+    }
+
+    public override bool CanRead => _inner.CanRead;
+    public override bool CanSeek => _inner.CanSeek;
+    public override bool CanWrite => false;
+    public override long Length => _inner.Length;
+    public override long Position
+    {
+        get => _inner.Position;
+        set => _inner.Position = value;
+    }
+    public override void Flush() => _inner.Flush();
+    public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        => _inner.ReadAsync(buffer, offset, count, ct);
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        => _inner.ReadAsync(buffer, ct);
+    public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            try { _inner.Dispose(); } catch { }
+            try { _resp.Dispose(); } catch { }
+        }
+        base.Dispose(disposing);
+    }
+}
+
+/// <summary>
+/// Native fetch implementation. Installs <c>globalThis.fetch</c> as a single
+/// callable function (no JS glue) that returns a <c>Promise&lt;FetchResponse&gt;</c>.
 /// </summary>
 internal static class FetchModule
 {
-    private static readonly ConcurrentDictionary<long, HttpResponseMessage> _responses = [];
-
     public static void Install(QuickJSRuntime engine, FetchModuleOptions? options = null)
     {
         options ??= new FetchModuleOptions();
+        var capturedOptions = options;
 
-        // Register __fetch_impl(url, opts, resolve, reject)
-        // Options are parsed synchronously on the JS thread;
-        // the actual HTTP call runs on a ThreadPool thread.
-        engine.RegisterGlobalFunction("__fetch_impl", args =>
+        engine.SetGlobalRawFunction("fetch", (ctx, thisVal, argc, argv) =>
         {
-            if (args.Length < 3) return null;
-
-            string? url = engine.GetString(args[0]);
-            var resolve = engine.DupValue(args[2]);
-            var reject = engine.DupValue(args[3]);
-
+            // Parse arguments synchronously on the JS thread.
+            string? url = argc > 0 ? engine.GetString(JSInteropRuntime.ArgAt(argv, 0)) : null;
             if (string.IsNullOrEmpty(url))
-            {
-                engine.RejectPromise(resolve, reject, "url required");
-                return null;
-            }
+                return JSPromiseBridge.RejectedPromise(engine, "url required");
 
-            // Parse options from second argument (synchronous, on JS thread)
             string method = "GET";
             byte[]? body = null;
-            int timeoutMs = options.DefaultTimeoutMs;
-            string? proxyUrl = options.ProxyUrl;
-            bool ignoreSsl = options.IgnoreSslErrors;
-            string? headersJson = null;
+            int timeoutMs = capturedOptions.DefaultTimeoutMs;
+            string? proxyUrl = capturedOptions.ProxyUrl;
+            bool ignoreSsl = capturedOptions.IgnoreSslErrors;
+            Dictionary<string, string>? headers = null;
 
-            if (args.Length > 1 && args[1].IsObject)
+            if (argc > 1)
             {
-                var opts = args[1];
-                var ctx = engine.Context;
-
-                var mVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "method");
-                if (mVal.IsString) method = engine.GetString(mVal) ?? "GET";
-                QuickJSNative.QJS_FreeValue(ctx, mVal);
-
-                var bVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "body");
-                if (bVal.IsString) body = engine.GetStringBytesUTF8(bVal);
-                else if (engine.GetByteArray(bVal) is byte[] bArr) body = bArr;
-                else if (!bVal.IsNullOrUndefined)
+                var opts = JSInteropRuntime.ArgAt(argv, 1);
+                if (opts.IsObject)
                 {
-                    // If body is an object, try to JSON.stringify it
-                    var bJson = QuickJSNative.QJS_JSONStringify(ctx, bVal);
-                    if (bJson.IsString) body = engine.GetStringBytesUTF8(bJson);
+                    var mVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "method");
+                    if (mVal.IsString) method = engine.GetString(mVal) ?? "GET";
+                    QuickJSNative.QJS_FreeValue(ctx, mVal);
 
-                    QuickJSNative.QJS_FreeValue(ctx, bJson);
+                    var bVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "body");
+                    if (bVal.IsString) body = engine.GetStringBytesUTF8(bVal);
+                    else if (engine.GetByteArray(bVal) is byte[] bArr) body = bArr;
+                    else if (!bVal.IsNullOrUndefined)
+                    {
+                        var bJson = QuickJSNative.QJS_JSONStringify(ctx, bVal);
+                        if (bJson.IsString) body = engine.GetStringBytesUTF8(bJson);
+                        QuickJSNative.QJS_FreeValue(ctx, bJson);
+                    }
+                    QuickJSNative.QJS_FreeValue(ctx, bVal);
+
+                    var tVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "timeout");
+                    if (tVal.IsNumber) timeoutMs = engine.GetInt32(tVal);
+                    QuickJSNative.QJS_FreeValue(ctx, tVal);
+
+                    var pVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "proxy");
+                    if (pVal.IsString) proxyUrl = engine.GetString(pVal);
+                    QuickJSNative.QJS_FreeValue(ctx, pVal);
+
+                    var sVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "ignoreSslErrors");
+                    if (sVal.IsBool) ignoreSsl = QuickJSNative.QJS_ToBool(ctx, sVal) != 0;
+                    QuickJSNative.QJS_FreeValue(ctx, sVal);
+
+                    var hVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "headers");
+                    if (hVal.IsObject)
+                    {
+                        // Use JSON.stringify + parse to enumerate keys without
+                        // a native key enumeration helper.
+                        var hJson = QuickJSNative.QJS_JSONStringify(ctx, hVal);
+                        if (hJson.IsString)
+                        {
+                            var json = engine.GetString(hJson);
+                            if (!string.IsNullOrEmpty(json))
+                            {
+                                try
+                                {
+                                    headers = System.Text.Json.JsonSerializer
+                                        .Deserialize<Dictionary<string, string>>(json);
+                                }
+                                catch { /* ignore */ }
+                            }
+                        }
+                        QuickJSNative.QJS_FreeValue(ctx, hJson);
+                    }
+                    QuickJSNative.QJS_FreeValue(ctx, hVal);
                 }
-#if DEBUG
-                if (body != null) Debug.WriteLine(Encoding.UTF8.GetString(body));
-#endif
-
-                QuickJSNative.QJS_FreeValue(ctx, bVal);
-
-                var tVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "timeout");
-                if (tVal.IsNumber) timeoutMs = engine.GetInt32(tVal);
-                QuickJSNative.QJS_FreeValue(ctx, tVal);
-
-                var pVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "proxy");
-                if (pVal.IsString) proxyUrl = engine.GetString(pVal);
-                QuickJSNative.QJS_FreeValue(ctx, pVal);
-
-                var sVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "ignoreSslErrors");
-                if (sVal.IsBool) ignoreSsl = QuickJSNative.QJS_ToBool(ctx, sVal) != 0;
-                QuickJSNative.QJS_FreeValue(ctx, sVal);
-
-                // Stringify headers to pass to the HTTP layer
-                var hVal = QuickJSNative.QJS_GetPropertyStr(ctx, opts, "headers");
-                if (hVal.IsObject)
-                {
-                    var hJson = QuickJSNative.QJS_JSONStringify(ctx, hVal);
-                    if (hJson.IsString) headersJson = engine.GetString(hJson);
-                    QuickJSNative.QJS_FreeValue(ctx, hJson);
-                }
-                QuickJSNative.QJS_FreeValue(ctx, hVal);
             }
 
-            // Capture all parsed values and dispatch to background thread
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != "http" && uri.Scheme != "https"))
+            {
+                return JSPromiseBridge.RejectedPromise(engine,
+                    "Invalid URL: only http and https schemes are allowed");
+            }
+
+            var capturedUrl = url!;
             var capturedMethod = method;
             var capturedBody = body;
-            var capturedHeadersJson = headersJson;
-            var capturedProxyUrl = proxyUrl;
-            var capturedIgnoreSsl = ignoreSsl;
+            var capturedHeaders = headers;
             var capturedTimeoutMs = timeoutMs;
-            var capturedUrl = url;
+            var capturedProxy = proxyUrl;
+            var capturedIgnoreSsl = ignoreSsl;
 
-            engine.Promise(resolve, reject, () =>
+            var task = Task.Run(() =>
             {
-                var client = GetClient(capturedProxyUrl, capturedIgnoreSsl, capturedTimeoutMs);
-                return DoFetch(capturedUrl, capturedMethod, capturedBody, capturedHeadersJson, client);
+                var client = GetClient(capturedProxy, capturedIgnoreSsl, capturedTimeoutMs);
+                return DoFetch(uri, capturedMethod, capturedBody, capturedHeaders, client, capturedUrl);
             });
 
-            return null;
-        }, 4);
-
-        engine.RegisterGlobalFunction("__fetch_read_text", args =>
-        {
-            if (args.Length < 3) return null;
-            var id = engine.GetInt32(args[0]);
-            var resolve = engine.DupValue(args[1]);
-            var reject = engine.DupValue(args[2]);
-
-            engine.Promise(resolve, reject, () =>
-            {
-                if (_responses.TryRemove(id, out var response))
-                {
-                    using (response)
-                    {
-                        return response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-                    }
-                }
-                else
-                {
-                    throw new Exception("Response already read or not found");
-                }
-            });
-            return null;
-        }, 3);
-
-        engine.RegisterGlobalFunction("__fetch_read_arrayBuffer", args =>
-        {
-            if (args.Length < 3) return null;
-            var id = engine.GetInt32(args[0]);
-            var resolve = engine.DupValue(args[1]);
-            var reject = engine.DupValue(args[2]);
-
-            engine.Promise(resolve, reject, () =>
-            {
-                if (_responses.TryRemove(id, out var response))
-                {
-                    using (response)
-                    {
-                        return response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
-                    }
-                }
-                else
-                {
-                    throw new Exception("Response already read or not found");
-                }
-            });
-            return null;
-        }, 3);
-
-        // Install the JS wrapper that provides Promise-based fetch API
-        engine.Eval(@"
-globalThis.fetch = function(url, options) {
-    return new Promise(function(resolve, reject) {
-        if (options && ArrayBuffer.isView(options.body)) {
-            const view = options.body;
-            let buffer = view;
-            if (view.buffer) {
-                if (view.byteOffset !== 0 || view.byteLength !== view.buffer.byteLength) {
-                    buffer = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
-                } else {
-                    buffer = view.buffer;
-                }
-            }
-            options.body = buffer;
-        }
-        __fetch_impl(url, options || {}, function(resultJson) {
-            try {
-                const result = JSON.parse(resultJson);
-                if (result.error) {
-                    reject(new Error(result.error));
-                } else {
-                    result.text = function() {
-                        return new Promise(function(res, rej) {
-                            __fetch_read_text(result.id, res, rej);
-                        });
-                    };
-                    result.json = function() {
-                        return result.text().then(function(t) { return JSON.parse(t); });
-                    };
-                    result.arrayBuffer = function() {
-                        return new Promise(function(res, rej) {
-                            __fetch_read_arrayBuffer(result.id, res, rej);
-                        });
-                    };
-                    resolve(result);
-                }
-            } catch (e) {
-                reject(e);
-            }
-        }, reject);
-    });
-};
-", "<fetch-init>");
+            return JSPromiseBridge.FromTask(engine, task, (rt, resp) => default);
+        }, argCount: 2);
     }
 
     private static readonly Lock _clientPoolLock = new();
     private static readonly ConcurrentDictionary<string, HttpClient> _clientPool = [];
+
     private static HttpClient GetClient(string? proxy, bool ignoreSslError, int timeoutMs)
     {
-        string key = GetClientKey(proxy, ignoreSslError, timeoutMs);
-
+        string key = $"{proxy ?? "direct"}|{ignoreSslError}|{timeoutMs}";
         if (_clientPool.TryGetValue(key, out var existing)) return existing;
-
         lock (_clientPoolLock)
         {
-            // Double-check after acquiring lock
             if (_clientPool.TryGetValue(key, out existing)) return existing;
-
             var handler = new HttpClientHandler();
-
             if (!string.IsNullOrEmpty(proxy))
             {
                 handler.Proxy = new WebProxy(proxy);
                 handler.UseProxy = true;
             }
-
-            if (ignoreSslError)
+            else
             {
-                handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
+                handler.UseProxy = false;
             }
-
-            var client = new HttpClient(handler)
-            {
-                Timeout = TimeSpan.FromMilliseconds(timeoutMs)
-            };
-            client.DefaultRequestHeaders.UserAgent.TryParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 QJS-f/1.0");
+            if (ignoreSslError)
+                handler.ServerCertificateCustomValidationCallback = (m, c, ch, e) => true;
+            var client = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+            client.DefaultRequestHeaders.UserAgent.TryParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/115.0.0.0 Safari/537.36 QJS-f/1.0");
             _clientPool[key] = client;
-#if DEBUG
-            Debug.WriteLine($"Created new HttpClient for key: {key}");
-#endif
             return client;
         }
     }
-    private static string GetClientKey(string? proxy, bool ignoreSslError, int timeoutMs) => $"{proxy ?? "direct"}|{ignoreSslError}|{timeoutMs}";
-    private static long _responseCounter = 0;
 
-    private static string DoFetch(string url, string method, byte[]? body, string? headersJson, HttpClient client)
+    private static FetchResponse DoFetch(Uri uri, string method, byte[]? body,
+        Dictionary<string, string>? headers, HttpClient client, string originalUrl)
     {
-        // Validate URL to prevent SSRF - only allow http(s) schemes
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != "http" && uri.Scheme != "https"))
-        {
-            return "{\"error\":\"Invalid URL: only http and https schemes are allowed\"}";
-        }
         var request = new HttpRequestMessage(new HttpMethod(method), uri);
-        Dictionary<string, string>? headerDict = null;
-        // Parse and set request headers
-        if (!string.IsNullOrEmpty(headersJson))
+        if (headers != null)
         {
-            try
+            foreach (var kvp in headers)
             {
-                // Simple JSON object parsing for headers
-                headerDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(headersJson);
-                if (headerDict != null)
+                if (!request.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value))
                 {
-                    foreach (var kvp in headerDict)
-                    {
-                        // Try to add as request header first, then as content header
-                        if (!request.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value))
-                        {
-                            // Will be set on content if applicable
 #if DEBUG
-                            Debug.WriteLine($"WRN! Cannot add Http request header `{kvp.Key}: {kvp.Value}`");
+                    Debug.WriteLine($"WRN! Cannot add request header `{kvp.Key}: {kvp.Value}`");
 #endif
-                        }
-                    }
                 }
             }
-            catch { /* ignore header parse errors */ }
         }
-
         if (body != null)
         {
             request.Content = new ByteArrayContent(body);
-            if (headerDict != null) foreach (var kvp in headerDict) request.Content.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value);
+            if (headers != null)
+                foreach (var kvp in headers)
+                    request.Content.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value);
         }
-
-        // Execute synchronously (we're called from JS sync context)
         var response = client.SendAsync(request).GetAwaiter().GetResult();
-        var id = Interlocked.Increment(ref _responseCounter);
-        _responses[id] = response;
-
-        // Build response headers JSON
-        var respHeaders = new StringBuilder("{");
-        bool first = true;
-        foreach (var header in response.Headers)
-        {
-            if (!first) respHeaders.Append(',');
-            first = false;
-            respHeaders.Append('"');
-            respHeaders.Append(EscapeJsonString(header.Key));
-            respHeaders.Append("\":\"");
-            respHeaders.Append(EscapeJsonString(string.Join(", ", header.Value)));
-            respHeaders.Append('"');
-        }
-        foreach (var header in response.Content.Headers)
-        {
-            if (!first) respHeaders.Append(',');
-            first = false;
-            respHeaders.Append('"');
-            respHeaders.Append(EscapeJsonString(header.Key));
-            respHeaders.Append("\":\"");
-            respHeaders.Append(EscapeJsonString(string.Join(", ", header.Value)));
-            respHeaders.Append('"');
-        }
-        respHeaders.Append('}');
-
-        int statusCode = (int)response.StatusCode;
-        string statusText = EscapeJsonString(response.ReasonPhrase ?? "");
-        string escapedUrl = EscapeJsonString(url);
-
-        return $"{{\"ok\":{(response.IsSuccessStatusCode ? "true" : "false")}," +
-               $"\"status\":{statusCode}," +
-               $"\"statusText\":\"{statusText}\"," +
-               $"\"headers\":{respHeaders}," +
-               $"\"id\":{id}," +
-               $"\"url\":\"{escapedUrl}\"}}";
-    }
-
-    ///// <summary>
-    ///// Immediately reject a fetch call (used for early validation errors).
-    ///// </summary>
-    //private static void RejectWith(QuickJSEngine engine, JSValue resolve, JSValue reject, string errorMessage)
-    //{
-    //    var eventLoop = engine.GetLooper();
-    //    eventLoop.TrackAsyncOp();
-    //    eventLoop.Post(() =>
-    //    {
-    //        var err = engine.ManagedToJSValue(errorMessage);
-    //        var undef = QuickJSNative.QJS_NewUndefined();
-    //        var r = engine.Call(reject, undef, err);
-    //        engine.FreeValue(r);
-    //        engine.FreeValue(err);
-    //        engine.FreeValue(resolve);
-    //        engine.FreeValue(reject);
-    //    });
-    //}
-
-    private static string EscapeJsonString(string s)
-    {
-        var sb = new StringBuilder(s.Length);
-        foreach (char c in s)
-        {
-            switch (c)
-            {
-                case '"': sb.Append("\\\""); break;
-                case '\\': sb.Append("\\\\"); break;
-                case '\b': sb.Append("\\b"); break;
-                case '\f': sb.Append("\\f"); break;
-                case '\n': sb.Append("\\n"); break;
-                case '\r': sb.Append("\\r"); break;
-                case '\t': sb.Append("\\t"); break;
-                default:
-                    if (c < 0x20)
-                        sb.Append($"\\u{(int)c:X4}");
-                    else
-                        sb.Append(c);
-                    break;
-            }
-        }
-        return sb.ToString();
+        return new FetchResponse(response, originalUrl);
     }
 }

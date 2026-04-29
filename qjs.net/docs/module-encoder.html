@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>TextEncoder / TextDecoder · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>TextEncoder / TextDecoder</h1>
+<p class="lede">最小可用版的 WHATWG 文本编解码器（仅 UTF-8）。</p>
+
+<section id="sec0" data-keywords="textencoder encode utf8">
+<h2>TextEncoder</h2>
+<div class="sig">new TextEncoder()</div>
+<div class="sig">readonly encoding: "utf-8"</div>
+<div class="sig">encode(str?: string): Uint8Array</div>
+</section>
+
+<section id="sec1" data-keywords="textdecoder decode utf8">
+<h2>TextDecoder</h2>
+<div class="sig">new TextDecoder(label?: string)</div>
+<div class="sig">readonly encoding: string</div>
+<div class="sig">decode(buffer?: ArrayBuffer | ArrayBufferView): string</div>
+</section>
+
+<section id="sec2" data-keywords="enable encoder 启用">
+<h2>启用</h2>
+<pre><code>engine = <span class="kw">new</span> QuickJSEngine(opt =&gt; opt.Encoder = <span class="kw">true</span>);</code></pre>
+</section>
+
+<section id="sec3" data-keywords="alt buffer 替代">
+<h2>与 Buffer 的对比</h2>
+<p>TextEncoder/Decoder 适合一次性转换；如果需要可变缓冲、按字节读写、流式处理，请用 <a href="module-buffer.html">Buffer</a>（其 <code>toString('utf8')</code> / <code>Buffer.from(str)</code> 同样涵盖 UTF-8 互转）。</p>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

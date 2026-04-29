@@ -54,6 +54,21 @@ public sealed class QuickJSEngineOptions
     /// When set, a <c>localStorage</c> object is available in JS.
     /// </summary>
     public string? LocalStoragePath { get; set; }
+
+    /// <summary>
+    /// When <c>true</c>, also expose enabled built-in modules as importable
+    /// <c>qjs:*</c> ES modules (e.g. <c>import fs from 'qjs:fs'</c>).
+    /// Defaults to <c>false</c> for backward compatibility.
+    /// </summary>
+    public bool BuiltinAsModule { get; set; }
+
+    /// <summary>
+    /// When <c>true</c> (and <see cref="BuiltinAsModule"/> is <c>true</c>),
+    /// suppress global injection of built-ins so they are <strong>only</strong>
+    /// reachable via <c>import</c>. Useful for sandboxed evaluation that wants
+    /// explicit dependency declarations. Defaults to <c>false</c>.
+    /// </summary>
+    public bool BuiltinAsModuleOnly { get; set; }
 }
 
 /// <summary>
@@ -136,6 +151,50 @@ public sealed class QuickJSEngine : IDisposable
     {
         ThrowIfDisposed();
         return _runtime.Execute(code, filename);
+    }
+
+    /// <summary>
+    /// Execute JavaScript source as an ES module. Supports <c>import</c> /
+    /// <c>export</c> syntax and top-level <c>await</c>. Module specifiers are
+    /// resolved through <see cref="Modules"/>.
+    /// </summary>
+    /// <param name="code">Module source.</param>
+    /// <param name="filename">Filename used as the module's specifier (also the import.meta key for QuickJS' internal cache).</param>
+    /// <returns>The settled value of the module's top-level promise (usually <c>null</c>).</returns>
+    public object? ExecuteModule(string code, string filename = "<module>")
+    {
+        ThrowIfDisposed();
+        return _runtime.ExecuteModule(code, filename);
+    }
+
+    /// <summary>
+    /// Dynamically import a module by specifier and return its namespace as
+    /// a <c>Dictionary&lt;string, object?&gt;</c>. Resolution goes through
+    /// <see cref="Modules"/>.
+    /// </summary>
+    public object? Import(string specifier)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(specifier);
+        var escaped = "\"" + specifier.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        // Stash result into a unique global because (a) module namespace objects don't JSON-serialize
+        // their exports and (b) Execute returns the Promise (which JSON-serializes to "{}") rather
+        // than its resolved value. The event loop still pumps, so by the time Execute returns the
+        // global has been written.
+        var slot = "__qjs_import_" + Guid.NewGuid().ToString("N");
+        var script = $"(async () => {{ const m = await import({escaped}); const o = {{}}; const ks = Object.keys(m); for (let i=0;i<ks.length;i++) o[ks[i]] = m[ks[i]]; globalThis[{System.Text.Json.JsonSerializer.Serialize(slot)}] = o; }})()";
+        _runtime.Execute(script, "<import>");
+        var result = _runtime.GetGlobal(slot);
+        _runtime.Execute($"delete globalThis[{System.Text.Json.JsonSerializer.Serialize(slot)}]", "<import-cleanup>");
+        return result;
+    }
+
+    /// <summary>
+    /// Configure ES module resolution (virtual modules, base path, custom resolver).
+    /// </summary>
+    public ModuleLoader Modules
+    {
+        get { ThrowIfDisposed(); return _runtime.Modules; }
     }
 
     /// <summary>
@@ -353,14 +412,23 @@ public sealed class QuickJSEngine : IDisposable
 
     private void InstallModules(QuickJSEngineOptions options)
     {
+        // Buffer must always be available because other modules accept it as
+        // an alternative to ArrayBuffer/Uint8Array. Installing it also runs
+        // its static constructor, which wires the BufferUnwrapHook used by
+        // [JSExport]-generated `byte[]` parameter readers.
+        System.Runtime.CompilerServices.RuntimeHelpers
+            .RunClassConstructor(typeof(QuickJsNet.Modules.Buffer).TypeHandle);
+        _runtime.SetGlobalStatic<QuickJsNet.Modules.Buffer>("Buffer");
+        _runtime.SetGlobalStatic<QuickJsNet.Modules.Stream>("Stream");
+
         if (options.Encoder)
             EncoderModule.Install(_runtime);
 
         if (options.FileSystem)
-            FileSystemModule.Install(_runtime, options.FileSystemBasePath);
+            _runtime.SetGlobal("fs", new FileSystemModule(options.FileSystemBasePath));
 
         if (options.AsyncFileSystem)
-            AsyncFileSystemModule.Install(_runtime, options.FileSystemBasePath);
+            _runtime.SetGlobal("fsAsync", new AsyncFileSystemModule(options.FileSystemBasePath));
 
         if (options.Fetch)
             FetchModule.Install(_runtime, options.FetchOptions);
@@ -370,6 +438,13 @@ public sealed class QuickJSEngine : IDisposable
 
         if (!string.IsNullOrEmpty(options.LocalStoragePath))
             _runtime.InstallLocalStorageModule(options.LocalStoragePath);
+
+        if (options.BuiltinAsModule)
+        {
+            BuiltinModuleBridge.Install(_runtime, options);
+            if (options.BuiltinAsModuleOnly)
+                BuiltinModuleBridge.RemoveGlobals(_runtime, options);
+        }
     }
 
     private void ThrowIfDisposed()

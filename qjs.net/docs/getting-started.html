@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>快速上手 · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>快速上手</h1>
+<p class="lede">从安装到运行第一段 JS，仅需 5 步。</p>
+
+<section id="sec0" data-keywords="install nuget 安装">
+<h2>1. 安装与引用</h2>
+<p>项目目前以源码形式集成。把 <code>qjs.net/QuickJsNet.csproj</code>（含 <code>QuickJsNet.SourceGenerators</code>）作为引用加入你的解决方案。库依赖原生 <code>quickjs</code> 动态库，已通过 P/Invoke 加载。</p>
+</section>
+
+<section id="sec1" data-keywords="engine create QuickJSEngine 引擎">
+<h2>2. 创建引擎</h2>
+<pre><code><span class="kw">using</span> QuickJsNet;
+<span class="kw">using var</span> engine = <span class="kw">new</span> QuickJSEngine(opt =&gt; {
+    opt.FileSystem        = <span class="kw">true</span>;
+    opt.AsyncFileSystem   = <span class="kw">true</span>;
+    opt.Fetch             = <span class="kw">true</span>;
+    opt.FileSystemBasePath = <span class="str">@"C:\sandbox"</span>; <span class="com">// fs/fsAsync 根目录</span>
+});</code></pre>
+<p>所有模块都是按需启用，未启用的不会污染全局命名空间。<code>Buffer</code> 与 <code>Stream</code> 始终可用（被其它模块依赖）。</p>
+</section>
+
+<section id="sec2" data-keywords="execute eval 执行 顶层 await">
+<h2>3. Eval vs Execute</h2>
+<table>
+<tr><th>方法</th><th>异步</th><th>顶层 await</th><th>用途</th></tr>
+<tr><td><code>engine.Eval(code)</code></td><td>否</td><td>否</td><td>纯同步表达式；遇到 Promise 不展开</td></tr>
+<tr><td><code>engine.Execute(code)</code></td><td>是（在调用线程上 pump 事件循环）</td><td>是</td><td>所有含 <code>await</code> / 异步副作用的脚本</td></tr>
+</table>
+<div class="box warn"><span class="label">注意</span>所有用到 <code>fetch</code> / <code>fsAsync</code> / <code>setTimeout</code> 等的脚本都必须用 <code>Execute</code>，否则 Promise 不会被解开。</div>
+</section>
+
+<section id="sec3" data-keywords="globals SetGlobal SetGlobalStatic 全局">
+<h2>4. 注入全局对象</h2>
+<pre><code>engine.SetGlobal(<span class="str">"appName"</span>, <span class="str">"qjs.net"</span>);
+
+<span class="com">// 让 [JSExport] 类的所有静态成员暴露在 JS 全局</span>
+engine.SetGlobalStatic&lt;MyMath&gt;(<span class="str">"MyMath"</span>);
+
+engine.Execute(<span class="str">"console.log(appName, MyMath.add(1, 2))"</span>);</code></pre>
+</section>
+
+<section id="sec4" data-keywords="export proxy JSExport 原生代理">
+<h2>5. 暴露 C# 类给 JS</h2>
+<pre><code>[JSExport]
+<span class="kw">public sealed partial class</span> Counter {
+    <span class="kw">private int</span> _n;
+    <span class="kw">public int</span> Value =&gt; _n;
+    <span class="kw">public int</span> Inc(<span class="kw">int</span> by = 1) =&gt; _n += by;
+    <span class="kw">public async</span> Task&lt;<span class="kw">int</span>&gt; IncAsync(<span class="kw">int</span> by) {
+        <span class="kw">await</span> Task.Delay(10);
+        <span class="kw">return</span> _n += by;
+    }
+}
+
+engine.SetGlobal(<span class="str">"counter"</span>, <span class="kw">new</span> Counter());
+engine.Execute(<span class="str">@"
+    counter.inc(5);
+    var v = await counter.incAsync(3);
+    v;     // 8
+"</span>);</code></pre>
+<p>命名约定：方法/属性首字母在 JS 端自动小写。<code>async Task&lt;T&gt;</code> 自动映射为返回 <code>Promise&lt;T&gt;</code> 的方法。详见 <a href="type-mapping.html">类型映射</a>。</p>
+</section>
+
+<section id="sec5" data-keywords="dispose lifecycle 释放">
+<h2>资源释放</h2>
+<p>始终用 <code>using</code> 包裹 <code>QuickJSEngine</code>。引擎销毁时会自动关闭所有未关闭的 <code>Stream</code> / <code>DirectoryStream</code> / <code>FetchResponse</code>。详见 <a href="module-stream.html">Stream</a> 中的“生命周期”章节。</p>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

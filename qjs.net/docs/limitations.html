@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>当前局限 · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>当前版本局限</h1>
+<p class="lede">已知限制 · 替代方案 · 未在范围内的功能。</p>
+
+<section id="sec0" data-keywords="buffer index indexer 索引">
+<h2>Buffer 不支持 <code>buf[i]</code> 索引</h2>
+<p>QuickJS 的 exotic-class 索引拦截改造成本高，且会绕过 [JSExport] 生成器。请使用 <code>buf.get(i)</code> / <code>buf.set(i, v)</code>。</p>
+</section>
+
+<section id="sec1" data-keywords="defaults parameters optional 默认参数">
+<h2>方法默认参数不会透传</h2>
+<p>JS 端没传的参数在 C# 一律读为 <code>0</code> / <code>false</code> / <code>null</code>，<b>不</b>会取 C# 方法签名上写的默认值。设计 [JSExport] API 时应让“缺省=正确语义”，详见 <a href="type-mapping.html">类型映射</a>。</p>
+</section>
+
+<section id="sec2" data-keywords="generator export limits class 类导出">
+<h2>[JSExport] 限制</h2>
+<ul>
+<li>类必须是 <code>partial sealed class</code>。</li>
+<li>不支持泛型类型/方法。</li>
+<li>不支持 <code>ref</code> / <code>out</code> / <code>in</code> 形参。</li>
+<li>不支持继承多态——派生类需要单独标 <code>[JSExport]</code>，binder 按运行时类型严格匹配。</li>
+<li>JS 端目前不能 <code>new</code> 出 [JSExport] 类；通过 C# 端 <code>SetGlobal</code> 或方法返回值传入。</li>
+<li>方法重载按 JS 名注册，<b>同名重载会互相覆盖</b>。请用唯一 JS 名或合并为单一签名（用 <code>JSValue</code> 形参在 C# 内分派）。</li>
+<li>数组形参元素类型必须是标量 / string / byte[] / 已注册 [JSExport] 类——不支持嵌套数组。</li>
+</ul>
+</section>
+
+<section id="sec3" data-keywords="threading single thread 多线程">
+<h2>单线程 / 单上下文</h2>
+<p>不要并发调用同一个 <code>QuickJSEngine</code>。需要并发 → 多个引擎实例。</p>
+</section>
+
+<section id="sec4" data-keywords="streams typedarray view 视图">
+<h2>不在范围内</h2>
+<ul>
+<li>没有 <code>TypedArray</code> 直接 zero-copy 视图（QuickJS 不暴露安全 API）。<code>Buffer.toUint8Array()</code> 必然拷贝。</li>
+<li>没有 Web Streams（<code>ReadableStream</code> / <code>WritableStream</code>）。我们用更轻量的统一 <code>Stream</code> 类；与 Node 的 <code>stream.Readable</code> 也不兼容。</li>
+<li>跨上下文传递 <code>Stream</code> / <code>Buffer</code> 行为未定义。</li>
+<li>没有 worker_threads / SharedArrayBuffer。</li>
+</ul>
+</section>
+
+<section id="sec5" data-keywords="modules import esm">
+<h2>模块系统</h2>
+<p>支持标准 ES Module 语法（<code>import</code> / <code>export</code> / 顶层 <code>await</code> / 动态 <code>import()</code>），见 <a href="module-esm.html">ES Modules</a>。当前局限：</p>
+<ul>
+<li><code>import.meta.url</code> / <code>import.meta.main</code> 已支持；<code>main</code> 当前固定为 <code>false</code>（保留字段）。</li>
+<li>不支持 <code>import attributes</code> / <code>import assert { type }</code>。</li>
+<li>不支持远端 (<code>https://...</code>) 模块。</li>
+<li>内置模块默认仅以全局形式暴露；启用 <code>QuickJSEngineOptions.BuiltinAsModule</code> 后可通过 <code>import { fs } from 'qjs:fs'</code> 等使用，<code>BuiltinAsModuleOnly</code> 可同时移除全局。</li>
+</ul>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

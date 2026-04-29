@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Buffer · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>Buffer</h1>
+<p class="lede">Node 风格的可变字节缓冲区。Memory&lt;byte&gt; 背书；slice 共享底层；toUint8Array 拷贝。</p>
+
+<section id="sec0" data-keywords="buffer overview design 设计">
+<h2>设计</h2>
+<ul>
+<li>始终在引擎中可用（无需 opt-in）。</li>
+<li>底层 <code>Memory&lt;byte&gt;</code>；<code>slice(start, end)</code> 返回共享底层的子视图，<b>不复制</b>。</li>
+<li>作为 C# <code>byte[]</code> 形参传入时（fs/fetch 等），生成器透过 <code>BufferUnwrapHook</code> 自动 unwrap 出独立副本。</li>
+<li>不支持 <code>buf[i]</code> 索引，请用 <code>get(i)</code> / <code>set(i, v)</code>。</li>
+</ul>
+</section>
+
+<section id="sec1" data-keywords="static alloc from concat 静态">
+<h2>静态方法 <span class="tag static">static</span></h2>
+<div class="sig">Buffer.alloc(size: number, fill?: number): Buffer</div>
+<p>分配 <code>size</code> 字节；<code>fill</code> 缺省 0。</p>
+
+<div class="sig">Buffer.from(source, encoding?: string): Buffer</div>
+<p><code>source</code> 可为 string / ArrayBuffer / Uint8Array / 另一个 Buffer。字符串支持的 encoding：<code>utf8</code>/<code>utf-8</code>（默认）、<code>ascii</code>、<code>latin1</code>/<code>binary</code>、<code>utf16</code>/<code>utf-16le</code>、<code>base64</code>、<code>hex</code>。</p>
+
+<div class="sig">Buffer.concat(list: Buffer[], totalLength?: number): Buffer</div>
+<p>拼接；<code>totalLength</code> 缺省/<=0 时按各段长度求和；超出截断，不足补 0。</p>
+</section>
+
+<section id="sec2" data-keywords="instance methods get set slice copy fill 方法">
+<h2>实例方法</h2>
+<div class="sig">length: number</div>
+<div class="sig">get(i: number): number</div>
+<div class="sig">set(i: number, v: number): void</div>
+<div class="sig">slice(start?: number, end?: number): Buffer</div>
+<p>返回共享底层的子视图。</p>
+
+<div class="sig">copy(target, targetStart?, sourceStart?, sourceEnd?): number</div>
+<div class="sig">fill(value: number, start?: number, end?: number): void</div>
+<div class="sig">equals(other: Buffer): boolean</div>
+<div class="sig">indexOf(value: number, from?: number): number</div>
+
+<div class="sig">toString(encoding?: string): string</div>
+<p>同 from() 编码集合；缺省 utf8。</p>
+
+<div class="sig">toArrayBuffer(): ArrayBuffer</div>
+<div class="sig">toUint8Array(): ArrayBuffer</div>
+<p>都会拷贝出新的 ArrayBuffer。</p>
+</section>
+
+<section id="sec3" data-keywords="numeric read write LE BE 数值">
+<h2>数值读写</h2>
+<p>readUInt8 / readInt8 / readUInt16LE / readUInt16BE / readInt32LE / readInt32BE / readFloat32LE / readFloat64LE，对应同名 <code>writeXxx(value, offset?)</code>。</p>
+</section>
+
+<section id="sec4" data-keywords="example buffer demo 示例">
+<h2>示例</h2>
+<pre><code><span class="kw">var</span> a = Buffer.from(<span class="str">'hello, '</span>);
+<span class="kw">var</span> b = Buffer.from(<span class="str">'world'</span>);
+<span class="kw">var</span> c = Buffer.concat([a, b]);
+c.toString();                    <span class="com">// "hello, world"</span>
+c.slice(7).toString();           <span class="com">// "world" — 共享底层内存</span>
+
+<span class="com">// 与原生 IO 互操作</span>
+fs.writeFileBytes(<span class="str">'/tmp/x.bin'</span>, c);
+<span class="kw">var</span> back = fs.readFileBytes(<span class="str">'/tmp/x.bin'</span>);  <span class="com">// ArrayBuffer</span>
+Buffer.from(back).toString();    <span class="com">// "hello, world"</span>
+
+<span class="com">// 数值打包</span>
+<span class="kw">var</span> hdr = Buffer.alloc(8);
+hdr.writeInt32LE(0xCAFEBABE | 0, 0);
+hdr.writeInt32LE(c.length, 4);
+hdr.toString(<span class="str">'hex'</span>);             <span class="com">// e.g. "bebafeca0c000000"</span>
+</code></pre>
+</section>
+
+<section id="sec5" data-keywords="lifecycle 生命周期">
+<h2>生命周期</h2>
+<p>Buffer 是托管对象，由 GC 回收。无须手动释放。<code>slice</code> 返回的视图持有原 buffer 的引用，原 buffer 不会先于视图被回收。</p>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

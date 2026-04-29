@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>类型映射 · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>C# ↔ JS 类型映射</h1>
+<p class="lede">由源生成器在 [JSExport] 边界自动完成的转换约定。</p>
+
+<section id="sec0" data-keywords="primitives number boolean string 基本类型">
+<h2>基本类型</h2>
+<table>
+<tr><th>C#</th><th>JS</th><th>备注</th></tr>
+<tr><td><code>bool</code></td><td><code>boolean</code></td><td>双向</td></tr>
+<tr><td><code>byte / sbyte / short / ushort / int</code></td><td><code>number</code></td><td>JS 端始终是 number；超出范围按 QuickJS 截断/转换</td></tr>
+<tr><td><code>uint / long</code></td><td><code>number</code></td><td>使用 64 位 JS_NewInt64；> 2^53 时精度丢失</td></tr>
+<tr><td><code>ulong</code></td><td><code>number</code></td><td>按 64 位有符号传出（unchecked）</td></tr>
+<tr><td><code>float / double</code></td><td><code>number</code></td><td>双向</td></tr>
+<tr><td><code>char</code></td><td><code>string</code> (单字符)</td><td>—</td></tr>
+<tr><td><code>string</code></td><td><code>string</code></td><td>UTF-8 互转</td></tr>
+<tr><td><code>enum</code></td><td><code>number</code></td><td>按底层 int 传输</td></tr>
+<tr><td><code>void</code></td><td><code>undefined</code></td><td>—</td></tr>
+<tr><td><code>null / undefined</code></td><td><code>null</code></td><td>JS 的 <code>undefined</code> 形参在 C# 端读为默认值/null</td></tr>
+</table>
+</section>
+
+<section id="sec1" data-keywords="byte array buffer Uint8Array ArrayBuffer 二进制">
+<h2>二进制：byte[] / Buffer / ArrayBuffer</h2>
+<table>
+<tr><th>C#</th><th>JS</th><th>方向</th></tr>
+<tr><td><code>byte[]</code> 形参</td><td><code>Buffer</code> · <code>ArrayBuffer</code> · <code>Uint8Array</code> · <code>string</code>(UTF-8)</td><td>JS → C#</td></tr>
+<tr><td><code>byte[]</code> 返回值</td><td><code>ArrayBuffer</code></td><td>C# → JS</td></tr>
+<tr><td><code>Buffer</code> 形参/返回值</td><td><code>Buffer</code></td><td>双向，原生代理</td></tr>
+</table>
+<div class="box"><span class="label">优势</span><code>Buffer</code> 内部用 <code>Memory&lt;byte&gt;</code>，<code>slice</code> 共享底层内存不复制；当作为 <code>byte[]</code> 形参传给 <code>fs.writeFileBytes()</code> 等时，自动 unwrap 出独立副本。</div>
+</section>
+
+<section id="sec2" data-keywords="async task promise async">
+<h2>异步：Task ↔ Promise</h2>
+<table>
+<tr><th>C#</th><th>JS</th></tr>
+<tr><td><code>Task</code> / <code>ValueTask</code></td><td><code>Promise&lt;undefined&gt;</code></td></tr>
+<tr><td><code>Task&lt;T&gt;</code> / <code>ValueTask&lt;T&gt;</code></td><td><code>Promise&lt;T&gt;</code></td></tr>
+</table>
+<p>所有 <code>async</code> 方法在 JS 端可用 <code>await</code>。<b>必须</b>通过 <code>engine.Execute(...)</code> 运行才能 pump 事件循环；<code>engine.Eval()</code> 返回未解开的 Promise 对象。</p>
+</section>
+
+<section id="sec3" data-keywords="containers list array dictionary 容器">
+<h2>容器</h2>
+<table>
+<tr><th>C#</th><th>JS</th><th>备注</th></tr>
+<tr><td><code>T[]</code> / <code>List&lt;T&gt;</code> / <code>IReadOnlyList&lt;T&gt;</code></td><td><code>Array</code></td><td>双向；元素类型受映射规则约束</td></tr>
+<tr><td><code>Dictionary&lt;string, V&gt;</code> / <code>IReadOnlyDictionary&lt;string, V&gt;</code></td><td><code>object</code> (字符串键)</td><td>双向</td></tr>
+<tr><td><code>JSValue</code></td><td>原生 JS 值</td><td>passthrough；可在 C# 内手动 unwrap 复杂入参</td></tr>
+</table>
+<div class="box warn"><span class="label">限制</span>数组元素或字典值必须是可映射的标量、字符串、<code>byte[]</code>、或注册了 <code>[JSExport]</code> 的类。<b>不支持</b>嵌套数组（数组的数组）作为参数；可以用 <code>JSValue</code> + <code>QuickJSRuntime</code> 形参在 C# 内自行展开。</div>
+</section>
+
+<section id="sec4" data-keywords="JSExport class proxy 自定义类">
+<h2>[JSExport] 类</h2>
+<ul>
+<li>类型必须是 <code>partial sealed class</code>，源生成器会为其生成 binder。</li>
+<li>JS 端方法/属性名 = C# 名首字母小写。</li>
+<li>构造函数：当前不支持从 JS 端 <code>new</code> 出 <code>[JSExport]</code> 类——通过 C# 端 <code>SetGlobal()</code> 或方法返回值传入。</li>
+<li>静态成员：用 <code>engine.SetGlobalStatic&lt;T&gt;("Name")</code> 在 JS 全局暴露一个静态容器对象。</li>
+<li>事件：C# 端 <code>EventHandler</code> / <code>EventHandler&lt;T&gt;</code> 自动映射为 JS 端 <code>addEventListener / removeEventListener</code>。</li>
+<li>实现 <code>IDisposable</code> 的 <code>[JSExport]</code> 类自动登记到引擎，引擎销毁时强制释放。</li>
+</ul>
+</section>
+
+<section id="sec5" data-keywords="signature parameters defaults 默认参数">
+<h2>方法形参 &amp; 默认值</h2>
+<div class="box warn"><span class="label">重要</span>C# 方法的默认参数值<b>不会</b>透传到 JS 调用：JS 端没传的参数在 C# 端读为 <code>0</code> / <code>false</code> / <code>null</code> / <code>0.0</code>。设计 [JSExport] API 时应让“缺省即正确语义”——例如用 <code>length &lt;= 0</code> 表示“读全部”，避免依赖 C# 默认参数值。</div>
+</section>
+
+<section id="sec6" data-keywords="errors exceptions throw 异常">
+<h2>异常</h2>
+<p>C# 抛出的 <code>Exception</code> 会被生成器代码捕获，转为 JS 端 <code>throw new Error(message)</code>。JS 抛出的异常在 <code>Eval/Execute</code> 中以 <code>QuickJSException</code> 抛出。</p>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

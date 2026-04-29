@@ -109,6 +109,14 @@ public static class JSInteropRuntime
         if (i >= argc) return null;
         var v = ArgAt(argv, i);
         if (v.IsNullOrUndefined) return null;
+        // Allow [JSExport] Buffer (or any registered wrapper) as a byte source.
+        // The hook is installed by Buffer's static constructor and avoids a
+        // hard reference from Interop to qjs.net Modules.
+        if (BufferUnwrapHook is { } hook)
+        {
+            var bytes = hook(ctx, v);
+            if (bytes is not null) return bytes;
+        }
         var bufPtr = QuickJSNative.QJS_GetArrayBuffer(ctx, out var sizePtr, v);
         if (bufPtr == IntPtr.Zero)
         {
@@ -121,6 +129,14 @@ public static class JSInteropRuntime
         if (size > 0) Marshal.Copy(bufPtr, arr, 0, size);
         return arr;
     }
+
+    /// <summary>
+    /// Optional hook letting higher-level types (e.g. Buffer) unwrap a JS
+    /// value to a managed <c>byte[]</c> before falling back to ArrayBuffer
+    /// inspection. Installed by <c>Buffer</c>'s static constructor; null means
+    /// "no wrapper types known".
+    /// </summary>
+    public static Func<IntPtr, JSValue, byte[]?>? BufferUnwrapHook;
 
     // ───────────────────── String helpers ─────────────────────
 
@@ -199,7 +215,101 @@ public static class JSInteropRuntime
     private static JSValue WrapWithBinder(IntPtr ctx, object value, IJSBinder binder)
     {
         var rt = QuickJsNet.Core.QuickJSRuntime.FromContext(ctx);
-        return rt is null ? QuickJSNative.QJS_NewNull() : binder.Wrap(rt, value);
+        if (rt is null) return QuickJSNative.QJS_NewNull();
+        // Mirror QuickJSRuntime.WrapManagedObject: ensure any IDisposable
+        // [JSExport] resource (Stream, DirectoryStream, FetchResponse...) gets
+        // tracked so engine.Dispose() can guarantee cleanup even when JS code
+        // forgets to close it.
+        if (value is IDisposable disposable)
+            rt.TrackDisposable(disposable);
+        return binder.Wrap(rt, value);
+    }
+
+    // ───────────────────── Container construction ─────────────────────
+
+    /// <summary>Allocate an empty JS Array.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue NewArray(IntPtr ctx) => QuickJSNative.QJS_NewArray(ctx);
+
+    /// <summary>
+    /// Set the <paramref name="i"/>-th element of a JS array. Steals the
+    /// reference to <paramref name="value"/> (caller must not free it).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void SetArrayItem(IntPtr ctx, JSValue arr, uint i, JSValue value)
+        => QuickJSNative.QJS_SetPropertyUint32(ctx, arr, i, value);
+
+    /// <summary>Allocate a fresh plain JS Object (no prototype customization).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue NewPlainObject(IntPtr ctx) => QuickJSNative.QJS_NewObject(ctx);
+
+    /// <summary>
+    /// Set a string-keyed property on a JS object. Steals the reference to
+    /// <paramref name="value"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void SetObjectItem(IntPtr ctx, JSValue obj, string key, JSValue value)
+        => QuickJSNative.QJS_SetPropertyStr(ctx, obj, key, value);
+
+    /// <summary>Read the length of a JS array (or array-like) by reading its <c>length</c> property.</summary>
+    public static int ReadArrayLength(IntPtr ctx, JSValue arr)
+    {
+        if (!arr.IsObject) return 0;
+        var lenVal = QuickJSNative.QJS_GetPropertyStr(ctx, arr, "length");
+        try
+        {
+            if (lenVal.Tag == JSValue.TAG_INT) return lenVal.Int32;
+            if (QuickJSNative.QJS_ToInt32(ctx, out int len, lenVal) == 0) return len;
+            return 0;
+        }
+        finally { QuickJSNative.QJS_FreeValue(ctx, lenVal); }
+    }
+
+    /// <summary>Read the <paramref name="i"/>-th element of a JS array. Caller must free the returned value.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static JSValue ReadArrayItem(IntPtr ctx, JSValue arr, uint i)
+        => QuickJSNative.QJS_GetPropertyUint32(ctx, arr, i);
+
+    /// <summary>Free a JS value (utility for emitter to reference symmetrically).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Free(IntPtr ctx, JSValue v) => QuickJSNative.QJS_FreeValue(ctx, v);
+
+    // ───────────────────── Element converters (used by generated array marshalling) ─────────────────────
+    //
+    // These read a single JSValue (already extracted from an array slot) and
+    // convert it to the target managed type. They mirror the Arg* helpers.
+
+    public static int ElInt32(IntPtr ctx, JSValue v, int defaultValue = 0)
+    {
+        if (v.Tag == JSValue.TAG_INT) return v.Int32;
+        if (QuickJSNative.QJS_ToInt32(ctx, out int r, v) == 0) return r;
+        return defaultValue;
+    }
+
+    public static long ElInt64(IntPtr ctx, JSValue v, long defaultValue = 0)
+    {
+        if (v.Tag == JSValue.TAG_INT) return v.Int32;
+        if (QuickJSNative.QJS_ToInt64(ctx, out long r, v) == 0) return r;
+        return defaultValue;
+    }
+
+    public static double ElFloat64(IntPtr ctx, JSValue v, double defaultValue = 0)
+    {
+        if (v.Tag == JSValue.TAG_INT) return v.Int32;
+        if (QuickJSNative.QJS_ToFloat64(ctx, out double r, v) == 0) return r;
+        return defaultValue;
+    }
+
+    public static bool ElBool(IntPtr ctx, JSValue v, bool defaultValue = false)
+    {
+        if (v.IsBool) return v.Int32 != 0;
+        return QuickJSNative.QJS_ToBool(ctx, v) != 0;
+    }
+
+    public static string? ElString(IntPtr ctx, JSValue v)
+    {
+        if (v.IsNullOrUndefined) return null;
+        return ReadString(ctx, v);
     }
 
     // ───────────────────── Errors ─────────────────────

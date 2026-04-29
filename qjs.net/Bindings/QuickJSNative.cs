@@ -310,6 +310,31 @@ public static partial class QuickJSNative
     public static partial JSValue QJS_NewCFunction(IntPtr ctx, IntPtr func,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string name, int length);
 
+    // ============= ES Module C-side primitives =============
+    [LibraryImport(DLL_NAME)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    public static partial IntPtr QJS_NewCModule(IntPtr ctx,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name, IntPtr initFunc);
+
+    [LibraryImport(DLL_NAME)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    public static partial int QJS_AddModuleExport(IntPtr ctx, IntPtr m,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+
+    [LibraryImport(DLL_NAME)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    public static partial int QJS_SetModuleExport(IntPtr ctx, IntPtr m,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name, JSValue val);
+
+    [LibraryImport(DLL_NAME)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    public static partial void QJS_SetModuleUrlFunc(IntPtr rt, IntPtr cb);
+
+    [LibraryImport(DLL_NAME)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    public static partial int QJS_SetImportMeta(IntPtr ctx, IntPtr m,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string url, int isMain);
+
     [LibraryImport(DLL_NAME)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     public static partial void QJS_SetPropertyFunctionStr(IntPtr ctx, JSValue obj,

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>DirectoryStream · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>DirectoryStream</h1>
+<p class="lede">按批枚举目录的流式入口，比一次性 readDir 更适合超大目录。</p>
+
+<section id="sec0" data-keywords="directorystream entry direntry 目录">
+<h2>设计</h2>
+<p>包装一个 <code>IEnumerator&lt;string&gt;</code>（来自 <code>Directory.EnumerateFileSystemEntries</code>），一次返回一批 <code>DirEntry</code>，直到 <code>read</code> 返回 <code>null</code>。与 <code>Stream</code> 一样登记到引擎，未关闭时引擎销毁会自动释放。</p>
+</section>
+
+<section id="sec1" data-keywords="open openDir create 创建">
+<h2>创建</h2>
+<div class="sig">fs.openDir(path: string): DirectoryStream</div>
+<div class="sig">fsAsync.openDir(path: string): Promise&lt;DirectoryStream&gt;</div>
+</section>
+
+<section id="sec2" data-keywords="methods read close direntry 方法">
+<h2>方法</h2>
+<div class="sig">read(maxEntries?: number): Promise&lt;DirEntry[] | null&gt; <span class="tag async">async</span></div>
+<p>取下一批最多 <code>maxEntries</code> 个条目；返回 <code>null</code> 表示已枚举完毕。<code>maxEntries</code> 缺省/<=0 时按内部默认（64）批量返回。</p>
+
+<div class="sig">close(): Promise&lt;void&gt; <span class="tag async">async</span></div>
+</section>
+
+<section id="sec3" data-keywords="direntry shape entry">
+<h2>DirEntry 结构</h2>
+<pre><code>{
+  name: string,         <span class="com">// 文件/目录名（不含父路径）</span>
+  isFile: boolean,
+  isDirectory: boolean,
+  size: number          <span class="com">// 对目录始终为 0</span>
+}</code></pre>
+</section>
+
+<section id="sec4" data-keywords="example demo enumerate 示例">
+<h2>示例</h2>
+<pre><code><span class="kw">var</span> ds = <span class="kw">await</span> fsAsync.openDir(<span class="str">'.'</span>);
+<span class="kw">try</span> {
+    <span class="kw">while</span> (<span class="kw">true</span>) {
+        <span class="kw">var</span> batch = <span class="kw">await</span> ds.read(64);
+        <span class="kw">if</span> (batch === <span class="kw">null</span>) <span class="kw">break</span>;
+        <span class="kw">for</span> (<span class="kw">var</span> e <span class="kw">of</span> batch) {
+            <span class="kw">if</span> (e.isFile) console.log(e.name, e.size);
+        }
+    }
+} <span class="kw">finally</span> {
+    <span class="kw">await</span> ds.close();
+}
+</code></pre>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

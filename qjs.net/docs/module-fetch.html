@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>fetch · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>fetch</h1>
+<p class="lede">基于 .NET HttpClient 的 fetch；返回 FetchResponse。</p>
+
+<section id="sec0" data-keywords="enable proxy ssl timeout 配置">
+<h2>启用与配置</h2>
+<pre><code><span class="kw">new</span> QuickJSEngine(opt =&gt; {
+    opt.Fetch        = <span class="kw">true</span>;
+    opt.FetchOptions = <span class="kw">new</span> FetchModuleOptions {
+        DefaultTimeout    = TimeSpan.FromSeconds(30),
+        DefaultProxy      = <span class="str">"http://127.0.0.1:7890"</span>,
+        IgnoreSslErrors   = <span class="kw">false</span>,
+        DefaultUserAgent  = <span class="str">"qjs.net/1.0"</span>,
+    };
+});</code></pre>
+</section>
+
+<section id="sec1" data-keywords="signature options 签名">
+<h2>签名</h2>
+<div class="sig">fetch(url: string, options?: FetchOptions): Promise&lt;FetchResponse&gt;</div>
+<p>FetchOptions 字段：<code>method</code> · <code>headers</code> · <code>body</code> · <code>timeout</code>(ms) · <code>proxy</code> · <code>ignoreSslErrors</code>。</p>
+<p><code>body</code> 接受 <code>string</code> 或二进制（Buffer / Uint8Array / ArrayBuffer）。</p>
+</section>
+
+<section id="sec2" data-keywords="response text json arraybuffer body 响应">
+<h2>FetchResponse 接口</h2>
+<div class="sig">ok: boolean · status: number · statusText: string · headers: Record&lt;string, string&gt; · url: string</div>
+<div class="sig">text(): Promise&lt;string&gt;</div>
+<div class="sig">json(): Promise&lt;any&gt;</div>
+<div class="sig">arrayBuffer(): Promise&lt;ArrayBuffer&gt;</div>
+<div class="sig">body(): Stream</div>
+
+<div class="box warn"><span class="label">互斥</span><code>text() / json() / arrayBuffer() / body()</code> 共享同一个底层响应——<b>首次调用任意一个即消耗响应</b>，后续调用其它任何一个都会抛错。<br>
+<code>body()</code> 返回的 Stream 拥有底层 <code>HttpResponseMessage</code>，关闭它即关闭整个响应（亦由引擎兜底）。</div>
+</section>
+
+<section id="sec3" data-keywords="example download stream 示例">
+<h2>示例：下载到文件（流式）</h2>
+<pre><code><span class="kw">var</span> r = <span class="kw">await</span> fetch(<span class="str">'https://example.com/file.zip'</span>);
+<span class="kw">if</span> (!r.ok) <span class="kw">throw new</span> Error(r.status + <span class="str">' '</span> + r.statusText);
+<span class="kw">var</span> n = <span class="kw">await</span> r.body().pipe(fs.openWrite(<span class="str">'file.zip'</span>));
+console.log(<span class="str">'wrote'</span>, n, <span class="str">'bytes'</span>);
+</code></pre>
+
+<h2>示例：POST JSON</h2>
+<pre><code><span class="kw">var</span> r = <span class="kw">await</span> fetch(<span class="str">'https://api.example.com/items'</span>, {
+    method: <span class="str">'POST'</span>,
+    headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+    body: JSON.stringify({ name: <span class="str">'qjs'</span>, year: 2025 }),
+});
+<span class="kw">var</span> data = <span class="kw">await</span> r.json();
+</code></pre>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

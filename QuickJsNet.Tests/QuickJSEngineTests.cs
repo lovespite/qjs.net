@@ -662,6 +662,118 @@ public class QuickJSEngineTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Fs_ReadDir_ReturnsNativeArray()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"qjs_dir_{Guid.NewGuid()}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "a.txt"), "a");
+            File.WriteAllText(Path.Combine(dir, "b.txt"), "b");
+            _engine.SetGlobal("__td", dir);
+            // Native marshalled array: should be a real Array, length 2
+            var len = _engine.Eval("Array.isArray(fs.readDir(__td)) ? fs.readDir(__td).length : -1");
+            Assert.Equal(2, Convert.ToInt32(len));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void Fs_Stat_ReturnsNativeObject()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"qjs_stat_{Guid.NewGuid()}.txt");
+        try
+        {
+            File.WriteAllText(tempFile, "xyz");
+            _engine.SetGlobal("__sf", tempFile);
+            var typ = _engine.Eval("typeof fs.stat(__sf)");
+            Assert.Equal("object", typ);
+            var size = _engine.Eval("fs.stat(__sf).size");
+            Assert.Equal(3, Convert.ToInt32(size));
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void FsAsync_Stat_ReturnsNativeObject()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"qjs_astat_{Guid.NewGuid()}.txt");
+        try
+        {
+            File.WriteAllText(tempFile, "abcd");
+            _engine.SetGlobal("__sf", tempFile);
+            var size = _engine.Execute("(await fsAsync.stat(__sf)).size");
+            Assert.Equal(4, Convert.ToInt32(size));
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void Fetch_Get_TextAndJson_E2E()
+    {
+        using var listener = new System.Net.HttpListener();
+        var port = 0;
+        // Find a free port
+        using (var s = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0))
+        {
+            s.Start();
+            port = ((System.Net.IPEndPoint)s.LocalEndpoint).Port;
+            s.Stop();
+        }
+        var prefix = $"http://127.0.0.1:{port}/";
+        listener.Prefixes.Add(prefix);
+        listener.Start();
+        var serverTask = Task.Run(async () =>
+        {
+            try
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    var ctx = await listener.GetContextAsync();
+                    ctx.Response.ContentType = "application/json";
+                    var bytes = System.Text.Encoding.UTF8.GetBytes("{\"hello\":\"world\",\"n\":42}");
+                    ctx.Response.ContentLength64 = bytes.Length;
+                    await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+                    await ctx.Response.OutputStream.FlushAsync();
+                    ctx.Response.OutputStream.Close();
+                    ctx.Response.Close();
+                }
+            }
+            catch
+            {
+                // Listener stopped, ignore.
+            }
+        });
+        try
+        {
+            _engine.SetGlobal("__url", prefix);
+            var text = _engine.Execute("await (await fetch(__url)).text()");
+            Assert.Contains("hello", (string)text!);
+
+            var n = _engine.Execute("(await (await fetch(__url)).json()).n");
+            Assert.Equal(42, Convert.ToInt32(n));
+
+            // .then chain (verifies Promise interop, not just top-level await)
+            var n2 = _engine.Execute("(await fetch(__url).then(r => r.json())).n");
+            Assert.Equal(42, Convert.ToInt32(n2));
+        }
+        finally
+        {
+            listener.Stop();
+            try { serverTask.Wait(2000); } catch { }
+        }
+    }
+
     // ════════════════════ GC ════════════════════
 
     [Fact]
@@ -873,5 +985,182 @@ public class QuickJSEngineTests : IDisposable
         _engine.SetGlobal("unicodeTest", "你好世界🌍");
         var result = _engine.Eval("unicodeTest");
         Assert.Equal("你好世界🌍", result);
+    }
+
+    // ════════════════════ Buffer ════════════════════
+
+    [Fact]
+    public void Buffer_AllocAndAccess()
+    {
+        var n = _engine.Eval(@"
+            var b = Buffer.alloc(8, 0xAA);
+            b.set(0, 1); b.set(1, 2);
+            b.length + ',' + b.get(0) + ',' + b.get(1) + ',' + b.get(7);
+        ");
+        Assert.Equal("8,1,2,170", n);
+    }
+
+    [Fact]
+    public void Buffer_FromString_Utf8AndToString()
+    {
+        var n = _engine.Eval(@"
+            var b = Buffer.from('你好', 'utf8');
+            b.length + ':' + b.toString('hex') + ':' + b.toString();
+        ");
+        Assert.Equal("6:e4bda0e5a5bd:你好", n);
+    }
+
+    [Fact]
+    public void Buffer_FromBase64()
+    {
+        var n = _engine.Eval(@"
+            var b = Buffer.from('aGVsbG8=', 'base64');
+            b.toString();
+        ");
+        Assert.Equal("hello", n);
+    }
+
+    [Fact]
+    public void Buffer_SliceSharesMemory()
+    {
+        var n = _engine.Eval(@"
+            var a = Buffer.from('abcdef');
+            var s = a.slice(1, 4);
+            s.set(0, 0x42);
+            a.toString();
+        ");
+        Assert.Equal("aBcdef", n);
+    }
+
+    [Fact]
+    public void Buffer_AsByteArrayArgument_FlowsThroughFs()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "qjs_buf_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            using var engine = new QuickJSEngine(o => o.FileSystemBasePath = dir);
+            engine.Eval(@"
+                var b = Buffer.from('hello-buf');
+                fs.writeFileBytes('out.bin', b);
+            ");
+            var bytes = File.ReadAllBytes(Path.Combine(dir, "out.bin"));
+            Assert.Equal("hello-buf", System.Text.Encoding.UTF8.GetString(bytes));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    // ════════════════════ Stream ════════════════════
+
+    [Fact]
+    public void Stream_MemoryWriteRead_RoundTrip()
+    {
+        var len = _engine.Execute(@"
+            var s = Stream.memory();
+            await s.write(Buffer.from('hello-stream'), 0, -1);
+            var n = s.length;
+            await s.close();
+            n;
+        ");
+        Assert.Equal(12L, Convert.ToInt64(len));
+    }
+
+    [Fact]
+    public void Stream_FilePipe_CopiesContent()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "qjs_stream_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "src.txt"), "pipe-payload");
+            using var engine = new QuickJSEngine(o => o.FileSystemBasePath = dir);
+            var n = engine.Execute(@"
+                var src = await fsAsync.openRead('src.txt');
+                var dst = await fsAsync.openWrite('dst.txt');
+                var n = await src.pipe(dst);
+                await src.close();
+                n;
+            ");
+            Assert.Equal(12L, Convert.ToInt64(n));
+            Assert.Equal("pipe-payload", File.ReadAllText(Path.Combine(dir, "dst.txt")));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    [Fact]
+    public void Stream_ReadAll_ReturnsBuffer()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "qjs_stream_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "x.txt"), "abcdef");
+            using var engine = new QuickJSEngine(o => o.FileSystemBasePath = dir);
+            var s = engine.Execute(@"
+                var s = fs.openRead('x.txt');
+                var b = await s.readAll();
+                await s.close();
+                b.toString();
+            ");
+            Assert.Equal("abcdef", s);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    // ════════════════════ DirectoryStream ════════════════════
+
+    [Fact]
+    public void DirectoryStream_EnumeratesEntries()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "qjs_dir_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            for (int i = 0; i < 5; i++)
+                File.WriteAllText(Path.Combine(dir, $"f{i}.txt"), "x");
+            using var engine = new QuickJSEngine(o => o.FileSystemBasePath = dir);
+            var total = engine.Execute(@"
+                var ds = await fsAsync.openDir('.');
+                var total = 0;
+                while (true) {
+                    var batch = await ds.read(2);
+                    if (batch === null) break;
+                    total += batch.length;
+                }
+                await ds.close();
+                total;
+            ");
+            Assert.Equal(5, Convert.ToInt32(total));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    // ════════════════════ Resource lifecycle ════════════════════
+
+    [Fact]
+    public void OpenedStreams_AreReleasedOnEngineDispose()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "qjs_life_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            for (int i = 0; i < 5; i++)
+                File.WriteAllText(Path.Combine(dir, $"f{i}.txt"), "x");
+
+            var engine = new QuickJSEngine(o => o.FileSystemBasePath = dir);
+            engine.Eval(@"
+                for (var i = 0; i < 5; i++) {
+                    fs.openRead('f' + i + '.txt');
+                    // intentionally do not close
+                }
+            ");
+            engine.Dispose();
+
+            // If handles weren't released, this would fail on Windows due to
+            // sharing violations.
+            for (int i = 0; i < 5; i++)
+                File.Delete(Path.Combine(dir, $"f{i}.txt"));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
     }
 }

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>总览 · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>QuickJsNet 文档</h1>
+<p class="lede">将 QuickJS 嵌入 .NET 的轻量绑定库 —— 原生 [JSExport] 代理、流式 IO、Promise/EventLoop 完整调度。</p>
+
+<section id="sec0" data-keywords="overview features 总览 特性">
+<h2>这是什么</h2>
+<p>QuickJsNet 把 <a href="https://bellard.org/quickjs/">QuickJS</a> 嵌入 .NET 进程，提供两类对接：</p>
+<ul>
+<li><b>原生对象代理</b>：用 <code>[JSExport]</code> 标注一个 C# 类，源生成器为它在 JS 端创建一个真正的 class（属性、方法、静态成员、async 方法→Promise、事件→addEventListener），无需手写 JS 胶水代码。</li>
+<li><b>内置模块</b>：<code>fs</code> / <code>fsAsync</code> / <code>fetch</code> / 计时器 / TextEncoder / TextDecoder / Buffer / Stream / DirectoryStream，按需启用。</li>
+</ul>
+</section>
+
+<section id="sec1" data-keywords="features 主要特性">
+<h2>主要特性</h2>
+<ul>
+<li>原生 <code>[JSExport]</code> 代理（无 JS 胶水）</li>
+<li>统一的字节流 <code>Stream</code>，C# 端实现 <code>pipe</code> 避免 per-chunk 跨语言往返</li>
+<li>Node 风格 <code>Buffer</code>（<code>Memory&lt;byte&gt;</code> 背书；<code>slice</code> 共享内存）</li>
+<li>异步文件系统 / 流式文件读写 / 流式目录枚举 / fetch 响应体流</li>
+<li><code>Promise ↔ Task</code> 互通，<code>engine.Execute()</code> 支持顶层 <code>await</code></li>
+<li>资源生命周期兜底：所有 <code>IDisposable</code> 资源在引擎销毁时强制释放</li>
+<li>Buffer 自动作为 <code>byte[]</code> 形参可接受（透过 <code>BufferUnwrapHook</code>）</li>
+<li>标准 <b>ES Module</b>：<code>import</code> / <code>export</code> / 顶层 <code>await</code> / 动态 <code>import()</code> / <code>import.meta.url</code> / 原生模块（<code>RegisterNative</code>）/ 内置模块 ESM 化（<code>qjs:fs</code> 等）</li>
+</ul>
+</section>
+
+<section id="sec2" data-keywords="quickstart hello quickstart 快速">
+<h2>30 秒上手</h2>
+<pre><code><span class="kw">using var</span> engine = <span class="kw">new</span> QuickJSEngine();
+<span class="kw">var</span> n = engine.Execute(<span class="str">"1 + 2 * 3"</span>);   <span class="com">// 同步 / 顶层 await 都行</span>
+Console.WriteLine(n);                          <span class="com">// → 7</span>
+
+<span class="kw">var</span> json = engine.Execute(<span class="str">@"
+    var r = await fetch('https://api.github.com');
+    (await r.json()).current_user_url;
+"</span>);
+</code></pre>
+<p>详细见 <a href="getting-started.html">快速上手</a>，或先浏览 <a href="type-mapping.html">C# ↔ JS 类型映射</a>。</p>
+</section>
+
+<section id="sec3" data-keywords="contents toc 目录 esm import export module 模块">
+<h2>文档索引</h2>
+<ul>
+<li><a href="getting-started.html">快速上手</a> — 引擎创建、模块开关、Eval vs Execute</li>
+<li><a href="type-mapping.html">类型映射</a> — C# 类型与 JS 之间的转换约定</li>
+<li><a href="eventloop.html">事件循环 &amp; Promise</a> — 单线程模型、Promise 解析、queueMicrotask、定时器</li>
+<li><a href="module-esm.html">ES Modules</a> — <code>import</code> / <code>export</code> / 顶层 <code>await</code> / 动态 <code>import()</code></li>
+<li><a href="limitations.html">当前版本局限</a> — 已知限制与替代方案</li>
+<li><a href="module-buffer.html">Buffer</a> · <a href="module-stream.html">Stream</a> · <a href="module-directorystream.html">DirectoryStream</a></li>
+<li><a href="module-fs.html">fs</a> · <a href="module-fsAsync.html">fsAsync</a> · <a href="module-fetch.html">fetch</a> · <a href="module-timers.html">Timers</a> · <a href="module-encoder.html">TextEncoder / TextDecoder</a></li>
+</ul>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>

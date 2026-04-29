@@ -52,6 +52,38 @@ public static class JSPromiseBridge
     public static JSValue FromTask<T>(QuickJSRuntime rt, ValueTask<T> vt, Func<QuickJSRuntime, T, JSValue> project)
         => FromTask(rt, vt.AsTask(), project);
 
+    /// <summary>
+    /// Wrap a <see cref="Task{T}"/> as a JS Promise where the projection from
+    /// the awaited result to a <see cref="JSValue"/> happens on the JS thread
+    /// (required when the projection itself calls into the QuickJS API).
+    /// </summary>
+    public static JSValue FromTaskWithJsProjection<T>(QuickJSRuntime rt, Task<T> task,
+        Func<QuickJSRuntime, T, JSValue> project)
+    {
+        var capRet = NewCapability(rt, out var resolveFn, out var rejectFn);
+        task.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                rt.RejectPromise(resolveFn, rejectFn, t.Exception?.InnerException ?? new Exception("Task faulted"));
+            else if (t.IsCanceled)
+                rt.RejectPromise(resolveFn, rejectFn, "Task canceled");
+            else
+                rt.ResolvePromiseWithProjection(resolveFn, rejectFn, t.Result, project);
+        }, TaskScheduler.Default);
+        return capRet;
+    }
+
+    /// <summary>
+    /// Return a Promise that is already rejected with the given message. The
+    /// rejection is dispatched onto the runtime event loop.
+    /// </summary>
+    public static JSValue RejectedPromise(QuickJSRuntime rt, string message)
+    {
+        var capRet = NewCapability(rt, out var resolveFn, out var rejectFn);
+        rt.RejectPromise(resolveFn, rejectFn, message);
+        return capRet;
+    }
+
     private static JSValue NewCapability(QuickJSRuntime rt, out JSValue resolve, out JSValue reject)
     {
         var arr = new JSValue[2];

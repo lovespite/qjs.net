@@ -8,8 +8,8 @@ internal static class EngineExtensions
     public static QuickJSRuntime InstallAllModules(this QuickJSRuntime engine)
     {
         EncoderModule.Install(engine);
-        FileSystemModule.Install(engine);
-        AsyncFileSystemModule.Install(engine);
+        engine.SetGlobal("fs", new FileSystemModule());
+        engine.SetGlobal("fsAsync", new AsyncFileSystemModule());
         FetchModule.Install(engine);
         WindowsSimple.Install(engine);
         return engine;
@@ -23,13 +23,13 @@ internal static class EngineExtensions
 
     public static QuickJSRuntime InstallFileSystemModule(this QuickJSRuntime engine)
     {
-        FileSystemModule.Install(engine);
+        engine.SetGlobal("fs", new FileSystemModule());
         return engine;
     }
 
     public static QuickJSRuntime InstallAsyncFileSystemModule(this QuickJSRuntime engine)
     {
-        AsyncFileSystemModule.Install(engine);
+        engine.SetGlobal("fsAsync", new AsyncFileSystemModule());
         return engine;
     }
 

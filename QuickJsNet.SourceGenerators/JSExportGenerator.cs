@@ -343,10 +343,79 @@ internal static class ModelBuilder
             SpecialType.System_Void)
             return true;
         if (t is IArrayTypeSymbol arr && arr.ElementType.SpecialType == SpecialType.System_Byte) return true;
+        // Generic array / list / dictionary support (one level deep)
+        if (t is IArrayTypeSymbol arr2 && ModelBuilder.IsScalarOrManaged(arr2.ElementType)) return true;
+        if (ModelBuilder.TryGetListElement(t, out var listEl) && ModelBuilder.IsScalarOrManaged(listEl!)) return true;
+        if (ModelBuilder.TryGetStringDict(t, out var dictVal) && ModelBuilder.IsScalarOrManaged(dictVal!)) return true;
+        // Special passthrough types (raw JS / runtime access)
+        if (ModelBuilder.IsRawJSValue(t) || ModelBuilder.IsRuntimeType(t)) return true;
         if (t.TypeKind == TypeKind.Class || t.TypeKind == TypeKind.Interface) return true;
         if (t.TypeKind == TypeKind.Enum) return true;
         return false;
     }
+
+    public static bool IsScalarOrManaged(ITypeSymbol t)
+    {
+        if (t is null) return false;
+        if (t.SpecialType is
+            SpecialType.System_Boolean or SpecialType.System_Byte or SpecialType.System_SByte or
+            SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Int32 or
+            SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 or
+            SpecialType.System_Single or SpecialType.System_Double or
+            SpecialType.System_String or SpecialType.System_Char or SpecialType.System_Object)
+            return true;
+        if (t.TypeKind == TypeKind.Enum) return true;
+        if (t.TypeKind == TypeKind.Class || t.TypeKind == TypeKind.Interface) return true;
+        return false;
+    }
+
+    public static bool TryGetListElement(ITypeSymbol t, out ITypeSymbol? element)
+    {
+        element = null;
+        if (t is INamedTypeSymbol nt && nt.IsGenericType && nt.TypeArguments.Length == 1)
+        {
+            var def = nt.OriginalDefinition.ToDisplayString();
+            if (def is
+                "System.Collections.Generic.List<T>" or
+                "System.Collections.Generic.IList<T>" or
+                "System.Collections.Generic.IReadOnlyList<T>" or
+                "System.Collections.Generic.ICollection<T>" or
+                "System.Collections.Generic.IReadOnlyCollection<T>" or
+                "System.Collections.Generic.IEnumerable<T>")
+            {
+                element = nt.TypeArguments[0];
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool TryGetStringDict(ITypeSymbol t, out ITypeSymbol? value)
+    {
+        value = null;
+        if (t is INamedTypeSymbol nt && nt.IsGenericType && nt.TypeArguments.Length == 2)
+        {
+            var def = nt.OriginalDefinition.ToDisplayString();
+            if (def is
+                "System.Collections.Generic.Dictionary<TKey, TValue>" or
+                "System.Collections.Generic.IDictionary<TKey, TValue>" or
+                "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>")
+            {
+                if (nt.TypeArguments[0].SpecialType == SpecialType.System_String)
+                {
+                    value = nt.TypeArguments[1];
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public static bool IsRawJSValue(ITypeSymbol t)
+        => t.ToDisplayString() == "QuickJSNet.Bindings.JSValue";
+
+    public static bool IsRuntimeType(ITypeSymbol t)
+        => t.ToDisplayString() == "QuickJsNet.Core.QuickJSRuntime";
 
     public static bool IsAsyncReturn(ITypeSymbol t, out ITypeSymbol? inner)
     {
@@ -682,7 +751,7 @@ internal static class Emitter
             }
             else
             {
-                sb.AppendLine($"return global::QuickJsNet.Interop.JSPromiseBridge.FromTask<{Fq(meth.AsyncResultType)}>(__rt, __task, (rt, v) => {ToJsExpr(meth.AsyncResultType, "v")});");
+                sb.AppendLine($"return global::QuickJsNet.Interop.JSPromiseBridge.FromTaskWithJsProjection<{Fq(meth.AsyncResultType)}>(__rt, __task, (rt, v) => {{ var ctx = rt.Context; return {ToJsExpr(meth.AsyncResultType, "v")}; }});");
             }
         }
         else if (meth.ReturnType.SpecialType == SpecialType.System_Void)
@@ -850,12 +919,50 @@ internal static class Emitter
             case SpecialType.System_Object: return $"global::QuickJsNet.Interop.JSInteropRuntime.ManagedObject(ctx, {varExpr})";
             case SpecialType.System_Void: return "global::QuickJsNet.Interop.JSInteropRuntime.Undefined()";
         }
-        if (t is IArrayTypeSymbol arr && arr.ElementType.SpecialType == SpecialType.System_Byte)
+        if (t is IArrayTypeSymbol arrB && arrB.ElementType.SpecialType == SpecialType.System_Byte)
             return $"global::QuickJsNet.Interop.JSInteropRuntime.Bytes(ctx, {varExpr})";
         if (t.TypeKind == TypeKind.Enum)
             return $"global::QuickJsNet.Interop.JSInteropRuntime.Int32(ctx, (int)({varExpr}))";
+        // T[] / List<T> / IReadOnlyList<T> -> JS Array
+        if (t is IArrayTypeSymbol arr2 && ModelBuilder.IsScalarOrManaged(arr2.ElementType))
+            return EmitArrayBuilder(arr2.ElementType, varExpr);
+        if (ModelBuilder.TryGetListElement(t, out var listEl) && ModelBuilder.IsScalarOrManaged(listEl!))
+            return EmitArrayBuilder(listEl!, varExpr);
+        // Dictionary<string, V> -> JS Object (string-keyed)
+        if (ModelBuilder.TryGetStringDict(t, out var dictV) && ModelBuilder.IsScalarOrManaged(dictV!))
+            return EmitDictBuilder(dictV!, varExpr);
+        // Raw JS passthrough
+        if (ModelBuilder.IsRawJSValue(t))
+            return varExpr;
         // Object: defer to ManagedObject (uses registry)
         return $"global::QuickJsNet.Interop.JSInteropRuntime.ManagedObject(ctx, (object?)({varExpr}))";
+    }
+
+    private static string EmitArrayBuilder(ITypeSymbol element, string varExpr)
+    {
+        var elExpr = ToJsExprFromVar(element, "__el");
+        return
+            "((global::System.Func<global::QuickJSNet.Bindings.JSValue>)(() => { " +
+            $"var __src = {varExpr}; " +
+            "if (__src is null) return global::QuickJsNet.Interop.JSInteropRuntime.Null(); " +
+            "var __arr = global::QuickJsNet.Interop.JSInteropRuntime.NewArray(ctx); " +
+            "uint __i = 0; " +
+            $"foreach (var __el in __src) {{ global::QuickJsNet.Interop.JSInteropRuntime.SetArrayItem(ctx, __arr, __i++, {elExpr}); }} " +
+            "return __arr; " +
+            "}))()";
+    }
+
+    private static string EmitDictBuilder(ITypeSymbol value, string varExpr)
+    {
+        var valExpr = ToJsExprFromVar(value, "__kv.Value");
+        return
+            "((global::System.Func<global::QuickJSNet.Bindings.JSValue>)(() => { " +
+            $"var __src = {varExpr}; " +
+            "if (__src is null) return global::QuickJsNet.Interop.JSInteropRuntime.Null(); " +
+            "var __obj = global::QuickJsNet.Interop.JSInteropRuntime.NewPlainObject(ctx); " +
+            $"foreach (var __kv in __src) {{ global::QuickJsNet.Interop.JSInteropRuntime.SetObjectItem(ctx, __obj, __kv.Key, {valExpr}); }} " +
+            "return __obj; " +
+            "}))()";
     }
 
     private static string FromJsExpr(ITypeSymbol t, string idxExpr)
@@ -878,10 +985,73 @@ internal static class Emitter
         }
         if (t.TypeKind == TypeKind.Enum)
             return $"({Fq(t)})global::QuickJsNet.Interop.JSInteropRuntime.ArgInt32(ctx, argv, argc, {idxExpr})";
-        if (t is IArrayTypeSymbol arr && arr.ElementType.SpecialType == SpecialType.System_Byte)
+        if (t is IArrayTypeSymbol bArr && bArr.ElementType.SpecialType == SpecialType.System_Byte)
             return $"global::QuickJsNet.Interop.JSInteropRuntime.ArgBytes(ctx, argv, argc, {idxExpr})";
+        // T[] / List<T>
+        if (t is IArrayTypeSymbol arr2 && ModelBuilder.IsScalarOrManaged(arr2.ElementType))
+            return EmitArrayReader(arr2.ElementType, idxExpr, asArray: true, listFq: null);
+        if (ModelBuilder.TryGetListElement(t, out var listEl) && ModelBuilder.IsScalarOrManaged(listEl!))
+            return EmitArrayReader(listEl!, idxExpr, asArray: false, listFq: $"global::System.Collections.Generic.List<{Fq(listEl!)}>");
+        // Raw JSValue passthrough
+        if (ModelBuilder.IsRawJSValue(t))
+            return $"global::QuickJsNet.Interop.JSInteropRuntime.ArgAt(argv, {idxExpr})";
+        // Runtime passthrough (does not consume a JS argument; resolved from ctx)
+        if (ModelBuilder.IsRuntimeType(t))
+            return $"global::QuickJsNet.Core.QuickJSRuntime.FromContext(ctx)!";
         // Class: try unwrap a managed object
         return $"global::QuickJsNet.Interop.JSInteropRuntime.ArgObject<{Fq(t)}>(ctx, argv, argc, {idxExpr})";
+    }
+
+    private static string EmitArrayReader(ITypeSymbol element, string idxExpr, bool asArray, string? listFq)
+    {
+        var elFq = Fq(element);
+        var elFromVal = ElementFromJsExpr(element, "__elv");
+        var resultType = asArray ? $"{elFq}[]?" : $"{listFq}?";
+        var resultInit = asArray
+            ? $"var __dst = new {elFq}[__len];"
+            : $"var __dst = new {listFq}(__len);";
+        var assign = asArray
+            ? "__dst[__k] = __ev;"
+            : "__dst.Add(__ev);";
+        return
+            $"((global::System.Func<{resultType}>)(() => {{ " +
+            $"var __jv = global::QuickJsNet.Interop.JSInteropRuntime.ArgAt(argv, {idxExpr}); " +
+            $"if ({idxExpr} >= argc || __jv.IsNullOrUndefined) return null; " +
+            "var __len = global::QuickJsNet.Interop.JSInteropRuntime.ReadArrayLength(ctx, __jv); " +
+            $"{resultInit} " +
+            "for (int __k = 0; __k < __len; __k++) { " +
+            "    var __elv = global::QuickJsNet.Interop.JSInteropRuntime.ReadArrayItem(ctx, __jv, (uint)__k); " +
+            $"    var __ev = {elFromVal}; " +
+            "    global::QuickJsNet.Interop.JSInteropRuntime.Free(ctx, __elv); " +
+            $"    {assign} " +
+            "} " +
+            "return __dst; " +
+            "}))()";
+    }
+
+    /// <summary>Convert a single JSValue (already extracted) to a managed element.</summary>
+    private static string ElementFromJsExpr(ITypeSymbol t, string vExpr)
+    {
+        switch (t.SpecialType)
+        {
+            case SpecialType.System_Boolean: return $"global::QuickJsNet.Interop.JSInteropRuntime.ElBool(ctx, {vExpr})";
+            case SpecialType.System_Byte: return $"(byte)global::QuickJsNet.Interop.JSInteropRuntime.ElInt32(ctx, {vExpr})";
+            case SpecialType.System_SByte: return $"(sbyte)global::QuickJsNet.Interop.JSInteropRuntime.ElInt32(ctx, {vExpr})";
+            case SpecialType.System_Int16: return $"(short)global::QuickJsNet.Interop.JSInteropRuntime.ElInt32(ctx, {vExpr})";
+            case SpecialType.System_UInt16: return $"(ushort)global::QuickJsNet.Interop.JSInteropRuntime.ElInt32(ctx, {vExpr})";
+            case SpecialType.System_Int32: return $"global::QuickJsNet.Interop.JSInteropRuntime.ElInt32(ctx, {vExpr})";
+            case SpecialType.System_UInt32: return $"(uint)global::QuickJsNet.Interop.JSInteropRuntime.ElInt64(ctx, {vExpr})";
+            case SpecialType.System_Int64: return $"global::QuickJsNet.Interop.JSInteropRuntime.ElInt64(ctx, {vExpr})";
+            case SpecialType.System_UInt64: return $"unchecked((ulong)global::QuickJsNet.Interop.JSInteropRuntime.ElInt64(ctx, {vExpr}))";
+            case SpecialType.System_Single: return $"(float)global::QuickJsNet.Interop.JSInteropRuntime.ElFloat64(ctx, {vExpr})";
+            case SpecialType.System_Double: return $"global::QuickJsNet.Interop.JSInteropRuntime.ElFloat64(ctx, {vExpr})";
+            case SpecialType.System_String: return $"global::QuickJsNet.Interop.JSInteropRuntime.ElString(ctx, {vExpr})";
+            case SpecialType.System_Char: return $"((global::QuickJsNet.Interop.JSInteropRuntime.ElString(ctx, {vExpr}) ?? \"\\0\")[0])";
+        }
+        if (t.TypeKind == TypeKind.Enum)
+            return $"({Fq(t)})global::QuickJsNet.Interop.JSInteropRuntime.ElInt32(ctx, {vExpr})";
+        // Fallback: read string representation
+        return $"global::QuickJsNet.Interop.JSInteropRuntime.ElString(ctx, {vExpr}) as {Fq(t)}";
     }
 
     private static string Sanitize(string s)
