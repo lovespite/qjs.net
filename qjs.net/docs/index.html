@@ -42,7 +42,24 @@ Console.WriteLine(n);                          <span class="com">// → 7</span>
 <p>详细见 <a href="getting-started.html">快速上手</a>，或先浏览 <a href="type-mapping.html">C# ↔ JS 类型映射</a>。</p>
 </section>
 
-<section id="sec3" data-keywords="contents toc 目录 esm import export module 模块">
+<section id="sec3" data-keywords="benchmarks performance 性能 测试">
+<h2>性能参考</h2>
+<p>以下是 QuickJS.NET 与常见 JavaScript 运行时在不同场景下的耗时对比（毫秒，数值越小越好）。测试环境：.NET 10 (Release), Node.js v20+, Bun v1+。</p>
+<table>
+<thead>
+<tr><th>测试场景</th><th>QuickJS.NET</th><th>Node.js (V8)</th><th>Bun (JSC)</th></tr>
+</thead>
+<tbody>
+<tr><td><b>递归斐波那契</b> (CPU/栈密集)</td><td>1323.26 ms</td><td>155.63 ms</td><td>170.61 ms</td></tr>
+<tr><td><b>曼德博集合</b> (浮点运算)</td><td>457.65 ms</td><td>103.33 ms</td><td>140.84 ms</td></tr>
+<tr><td><b>大数组排序</b> (内存/数组)</td><td>800.01 ms</td><td>1592.96 ms</td><td>453.67 ms</td></tr>
+<tr><td><b>字符串拼接</b> (字符串/分配)</td><td>113.91 ms</td><td>113.54 ms</td><td>150.75 ms</td></tr>
+</tbody>
+</table>
+<p><b>分析提示：</b> QuickJS 是一个纯解释型引擎，在递归和重度数学运算等 JIT 主场场景下弱于 Node.js/Bun；但在字符串处理和部分数组操作上，由于其极其轻量的设计和高效的底层实现，表现非常出色，甚至在某些场景下优于 Node.js。</p>
+</section>
+
+<section id="sec4" data-keywords="contents toc 目录 esm import export module 模块">
 <h2>文档索引</h2>
 <ul>
 <li><a href="getting-started.html">快速上手</a> — 引擎创建、模块开关、Eval vs Execute</li>
