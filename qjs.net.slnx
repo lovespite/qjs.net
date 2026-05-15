@@ -10,5 +10,7 @@
   <Project Path="QuickJsNet.Tests/QuickJsNet.Tests.csproj">
     <Platform Solution="*|x64" Project="x64" />
   </Project>
+  <Project Path="QuickJsNet.Benchmarks/QuickJsNet.Benchmarks.csproj" />
+  <Project Path="QuickJsNet.Cli/QuickJsNet.Cli.csproj" />
   <Project Path="QuickJsNet.SourceGenerators/QuickJsNet.SourceGenerators.csproj" />
 </Solution>

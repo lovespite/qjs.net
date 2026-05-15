@@ -113,14 +113,14 @@ internal static class EngineExtensions
         engine.RegisterGlobalFunction("__localStorageKeysImpl", args =>
         {
             var keys = kvs.GetKeysAsync().GetAwaiter().GetResult().ToArray();
-            return System.Text.Json.JsonSerializer.Serialize(keys);
+            return System.Text.Json.JsonSerializer.Serialize(keys, QuickJsNet.Utils.QuickJsJsonContext.Default.StringArray);
         }, 0);
 
         engine.RegisterGlobalFunction("__localStorageFindKeysImpl", args =>
         {
             var keyword = engine.GetString(args[0]);
             var keys = kvs.FindKeysAsync(keyword!).GetAwaiter().GetResult().ToArray();
-            return System.Text.Json.JsonSerializer.Serialize(keys);
+            return System.Text.Json.JsonSerializer.Serialize(keys, QuickJsNet.Utils.QuickJsJsonContext.Default.StringArray);
         }, 1);
 
         engine.Eval(@"

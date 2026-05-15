@@ -135,7 +135,7 @@ internal static class WindowsSimple
         if (raw is null) return null;
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<SelectOption[]>(raw);
+            return System.Text.Json.JsonSerializer.Deserialize(raw, QuickJsNet.Utils.QuickJsJsonContext.Default.SelectOptionArray);
         }
         catch
         {

@@ -37,7 +37,7 @@ public class BuiltinModuleBridgeTests
         {
             System.IO.File.WriteAllText(tmp, "esm-bridged");
             var src = "import fs from 'qjs:fs'; globalThis.__r = fs.readFile("
-                + System.Text.Json.JsonSerializer.Serialize(tmp) + ");";
+                + System.Text.Json.JsonSerializer.Serialize(tmp, QuickJsNet.Tests.TestJsonContext.Default.String) + ");";
             engine.ExecuteModule(src);
             Assert.Equal("esm-bridged", engine.GetGlobal("__r"));
         }
@@ -69,7 +69,7 @@ public class BuiltinModuleBridgeTests
         {
             System.IO.File.WriteAllText(tmp, "only-mode");
             var src = "import fs from 'qjs:fs'; globalThis.__r = fs.readFile("
-                + System.Text.Json.JsonSerializer.Serialize(tmp) + ");";
+                + System.Text.Json.JsonSerializer.Serialize(tmp, QuickJsNet.Tests.TestJsonContext.Default.String) + ");";
             engine.ExecuteModule(src);
             Assert.Equal("only-mode", engine.GetGlobal("__r"));
         }

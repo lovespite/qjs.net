@@ -182,10 +182,10 @@ public sealed class QuickJSEngine : IDisposable
         // than its resolved value. The event loop still pumps, so by the time Execute returns the
         // global has been written.
         var slot = "__qjs_import_" + Guid.NewGuid().ToString("N");
-        var script = $"(async () => {{ const m = await import({escaped}); const o = {{}}; const ks = Object.keys(m); for (let i=0;i<ks.length;i++) o[ks[i]] = m[ks[i]]; globalThis[{System.Text.Json.JsonSerializer.Serialize(slot)}] = o; }})()";
+        var script = $"(async () => {{ const m = await import({escaped}); const o = {{}}; const ks = Object.keys(m); for (let i=0;i<ks.length;i++) o[ks[i]] = m[ks[i]]; globalThis[\"{slot}\"] = o; }})()";
         _runtime.Execute(script, "<import>");
         var result = _runtime.GetGlobal(slot);
-        _runtime.Execute($"delete globalThis[{System.Text.Json.JsonSerializer.Serialize(slot)}]", "<import-cleanup>");
+        _runtime.Execute($"delete globalThis[\"{slot}\"]", "<import-cleanup>");
         return result;
     }
 

@@ -246,7 +246,7 @@ internal static class FetchModule
                                 try
                                 {
                                     headers = System.Text.Json.JsonSerializer
-                                        .Deserialize<Dictionary<string, string>>(json);
+                                        .Deserialize(json, QuickJsNet.Utils.QuickJsJsonContext.Default.DictionaryStringString);
                                 }
                                 catch { /* ignore */ }
                             }
