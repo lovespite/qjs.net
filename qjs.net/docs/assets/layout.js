@@ -5,6 +5,7 @@
         { group: 'Overview', items: [
             { href: 'index.html', title: '总览' },
             { href: 'getting-started.html', title: '快速上手' },
+            { href: 'jsexport.html', title: '原生代理 [JSExport]' },
             { href: 'type-mapping.html', title: 'C# ↔ JS 类型映射' },
             { href: 'eventloop.html', title: '事件循环 & Promise' },
             { href: 'module-esm.html', title: 'ES Modules (import / export)' },

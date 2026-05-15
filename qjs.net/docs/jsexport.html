@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>JSExport 原生代理 · QuickJsNet</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main>
+<h1>JSExport 原生代理</h1>
+<p class="lede">通过 <code>[JSExport]</code> 特性，让 C# 类在 JavaScript 中拥有近乎原生的调用体验。</p>
+
+<section id="sec0" data-keywords="introduction usage partial sealed class">
+<h2>核心概念</h2>
+<p><code>[JSExport]</code> 是 QuickJsNet 最核心的特性之一。它配合 .NET 源生成器（Source Generator），在编译时为你的 C# 类生成高度优化的非反射绑定代码（Binder）。</p>
+<div class="box">
+<span class="label">要求</span>
+<ul>
+    <li>类必须声明为 <code>partial</code>。</li>
+    <li>建议声明为 <code>sealed</code> 以获得最佳性能。</li>
+    <li>必须拥有公共构造函数（虽然当前 JS 端不能 <code>new</code>，但 C# 返回实例时需要）。</li>
+</ul>
+</div>
+<pre><code><span class="kw">[JSExport]</span>
+<span class="kw">public partial class</span> <span class="typ">MyModule</span>
+{
+    <span class="kw">public void</span> Hello() => <span class="typ">Console</span>.WriteLine(<span class="str">"Hello from C#"</span>);
+}</code></pre>
+</section>
+
+<section id="sec1" data-keywords="members methods properties fields static">
+<h2>支持的成员类型</h2>
+<p>源生成器会自动扫描类中的公共（public）成员并暴露给 JS：</p>
+<table>
+<tr><th>成员类型</th><th>JS 表现</th><th>备注</th></tr>
+<tr><td><b>实例方法</b></td><td>函数</td><td>自动转为 camelCase。支持同步/异步。</td></tr>
+<tr><td><b>实例属性</b></td><td>Getter / Setter</td><td>自动转为 camelCase。支持只读/只写。</td></tr>
+<tr><td><b>静态方法</b></td><td>容器对象上的函数</td><td>需通过 <code>SetGlobalStatic</code> 注册。</td></tr>
+<tr><td><b>静态属性</b></td><td>容器对象上的属性</td><td>同上。</td></tr>
+<tr><td><b>事件</b></td><td>EventTarget 风格</td><td>支持 <code>addEventListener</code> / <code>removeEventListener</code>。</td></tr>
+<tr><td><b>索引器</b></td><td>不支持</td><td>建议使用 <code>get(i)</code> / <code>set(i, v)</code> 方法。</td></tr>
+</table>
+</section>
+
+<section id="sec2" data-keywords="naming JSName camelCase rename">
+<h2>命名约定与重命名</h2>
+<p>默认情况下，C# 成员在 JS 中会自动转换为 <b>camelCase</b>（小驼峰）风格。</p>
+<ul>
+    <li><code>public void DoWork()</code> → <code>obj.doWork()</code></li>
+    <li><code>public string UserName { get; set; }</code> → <code>obj.userName</code></li>
+</ul>
+<p>如果你需要自定义 JS 中的名称，可以使用 <code>[JSName]</code> 特性：</p>
+<pre><code><span class="kw">[JSExport]</span>
+<span class="kw">public partial class</span> <span class="typ">Tools</span>
+{
+    <span class="kw">[JSName(</span><span class="str">"execute_all"</span><span class="kw">)]</span>
+    <span class="kw">public void</span> Run() { }
+}</code></pre>
+</section>
+
+<section id="sec3" data-keywords="ignore JSIgnore private">
+<h2>排除成员</h2>
+<p>如果你不希望某个公共成员被暴露给 JS，可以使用 <code>[JSIgnore]</code>：</p>
+<pre><code><span class="kw">[JSIgnore]</span>
+<span class="kw">public string</span> InternalToken { <span class="kw">get</span>; <span class="kw">set</span>; }</code></pre>
+<p>注意：私有（private）和内部（internal）成员默认<b>不会</b>被导出。</p>
+</section>
+
+<section id="sec4" data-keywords="async task promise await">
+<h2>异步支持 (Async / Promise)</h2>
+<p>如果 C# 方法返回 <code>Task</code> 或 <code>Task&lt;T&gt;</code>，生成器会自动将其包装为 JavaScript <b>Promise</b>。</p>
+<pre><code><span class="com">// C#</span>
+<span class="kw">public async Task&lt;string&gt;</span> FetchDataAsync(<span class="kw">string</span> url) { ... }
+
+<span class="com">// JS</span>
+<span class="kw">const</span> data = <span class="kw">await</span> obj.fetchDataAsync(url);</code></pre>
+<div class="box warn"><span class="label">重要</span> 异步任务的回调会自动调度回引擎所在的单线程 EventLoop，无需担心线程安全问题。</div>
+</section>
+
+<section id="sec5" data-keywords="events eventlistener addEventListener">
+<h2>事件支持</h2>
+<p>类中的 <code>event Action</code> 或 <code>event EventHandler</code> 会被映射为标准的 JS 事件订阅模式。</p>
+<pre><code><span class="com">// C#</span>
+<span class="kw">public event Action&lt;string&gt;</span>? MessageReceived;
+
+<span class="com">// JS</span>
+obj.addEventListener(<span class="str">'messageReceived'</span>, (msg) => {
+    console.log(<span class="str">'Got:'</span>, msg);
+});</code></pre>
+</section>
+
+<section id="sec6" data-keywords="lifecycle IDisposable GC destroy">
+<h2>生命周期与 IDisposable</h2>
+<p>如果 <code>[JSExport]</code> 类实现了 <code>IDisposable</code> 接口：</p>
+<ol>
+    <li><b>自动注册</b>：该实例会被 QuickJsNet 运行时自动追踪。</li>
+    <li><b>强制释放</b>：当 <code>QuickJSEngine</code> 被销毁（Dispose）时，所有由该引擎创建且尚未释放的 <code>[JSExport]</code> 实例都会被强制调用 <code>Dispose()</code>。</li>
+</ol>
+<p>这确保了即使 JS 端没有及时触发垃圾回收，原生资源（如文件句柄、网络连接）也能被正确关闭。</p>
+</section>
+
+<section id="sec7" data-keywords="registration SetGlobal SetGlobalStatic">
+<h2>如何注入到 JS</h2>
+<p>创建好 <code>[JSExport]</code> 类后，你可以通过以下方式将其暴露给 JS：</p>
+<h3>1. 注入实例</h3>
+<pre><code><span class="kw">var</span> myObj = <span class="kw">new</span> <span class="typ">MyModule</span>();
+engine.SetGlobal(<span class="str">"my"</span>, myObj);
+<span class="com">// JS: my.hello();</span></code></pre>
+
+<h3>2. 注入静态容器</h3>
+<p>这常用于注入单例工具类或工厂类：</p>
+<pre><code>engine.SetGlobalStatic&lt;<span class="typ">StaticMath</span>&gt;(<span class="str">"MathUtils"</span>);
+<span class="com">// JS: MathUtils.square(5);</span></code></pre>
+</section>
+
+<section id="sec8" data-keywords="limitations constructor generic">
+<h2>局限性</h2>
+<ul>
+    <li><b>不能在 JS 端 new</b>：目前不支持 <code>new MyClass()</code>。对象必须由 C# 创建并传入。</li>
+    <li><b>不支持泛型类</b>：<code>[JSExport]</code> 不能标记在 <code>class MyBox&lt;T&gt;</code> 上。</li>
+    <li><b>不支持继承多态</b>：如果 A 继承 B，且都标了 <code>[JSExport]</code>，JS 端只会看到实例真实类型所拥有的成员。</li>
+</ul>
+</section>
+</main>
+<script src="assets/layout.js"></script>
+<script src="assets/search.js"></script>
+</body></html>
